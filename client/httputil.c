@@ -10,6 +10,8 @@
 #include <sys/stat.h>
 #include <fcntl.h>
 #include <math.h>
+#include <signal.h>
+#include <errno.h>
 
 #define MAXFILENAME 100
 #define MAXHOSTNAME 200
@@ -28,8 +30,9 @@ int getofd(const char * res_location, const char *local_path, int store_data);
 int parserespcode(char ** pptr);
 long parselength(char ** pptr);
 int parsebodystart(char ** pptr);
-
-
+ssize_t readwithtimeout(int sockfd, void *buf, size_t count, int sec);
+ssize_t writewithtimeout(int sockfd, const void *buf, size_t count, int sec);
+ssize_t writenwithtimeout(int fd, const char *buf, size_t len, int sec);
 
 /* url:=[protocol://]+<hostname>+[:port number]+[resource location] */
 void parse_url(const char *url, char *port, char *host, char *location){
@@ -81,7 +84,7 @@ int tcp_connect(const char *host, const char *serv)
 	hints.ai_socktype = SOCK_STREAM;
 
 	if ( (n = getaddrinfo(host, serv, &hints, &res)) != 0) {
-		fprintf(stderr, "tcp_connect error for %s, %s: %s\n",
+		fprintf(stderr, "getaddrinfo erro for %s, %s: %s\n",
 			host, serv, gai_strerror(n));
 		return -1;
 	}
@@ -100,7 +103,7 @@ int tcp_connect(const char *host, const char *serv)
 	} while ( (res = res->ai_next) != NULL);
 
 	if (res == NULL) {	/* errno set from final connect() */
-		fprintf(stderr, "tcp_connect error for %s, %s\n", host, serv);
+		fprintf(stderr, "tcp_connect:no working addrinfo for %s, %s\n", host, serv);
 		sockfd = -1;
 	        perror("read error");
 		return -1;
@@ -134,7 +137,7 @@ int fetch_body(int sockfd, char * res_location, const char * hostName, const cha
     }
 
     memset(httpMsg,0,MAXMSGBUF);
-    while((n = read(sockfd, httpMsg, MAXMSGBUF-1))>0){
+    while((n = readwithtimeout(sockfd, httpMsg, MAXMSGBUF-1,20))>0){
         ptr=httpMsg;
         if(code==0){
             code=parserespcode(&ptr);
@@ -167,13 +170,28 @@ int fetch_body(int sockfd, char * res_location, const char * hostName, const cha
         memset(httpMsg,0,MAXMSGBUF);
     }
 
-    if(n<0)
+    if(n==-1)
     {
 	perror("read error");
 	return -1;
     }else if (n==0){
 	printf("connection is closed by server, however body is not received completely.\n");
 	return -1;
+    }else if (n==-2){
+        printf("fetch_body() read timeout\n");
+        return -1;
+    }
+    return 0;
+}
+
+int ignoresig(int signo){
+    struct sigaction	act, oact;
+    act.sa_handler=SIG_IGN;
+    sigemptyset(&act.sa_mask);
+    act.sa_flags = 0;
+    if (sigaction(signo, &act, &oact) < 0){
+        perror("ignoresig");
+        return -1;
     }
     return 0;
 }
@@ -182,8 +200,10 @@ int sendfile(int fd, int sockfd){
     fd_set rset;
     int maxfdp1, stdineof, code, n;
     char buf[MAXMSGBUF], *ptr;
+    
     stdineof = 0;
     FD_ZERO(&rset);
+    ignoresig(SIGPIPE);
     for ( ; ; ) {
         if (stdineof == 0)
             FD_SET(fd, &rset);
@@ -196,28 +216,26 @@ int sendfile(int fd, int sockfd){
             if ( (n = read(sockfd, buf, MAXMSGBUF)) == 0) {
                 if (stdineof == 1){
                     printf("local file written to socket completely, however server closed tcp without HTTP response\n");
-                    return 0;		/* normal termination */
+                    return -1;		/* only 2xx response received is considered as success */
                 }
 		else{
-		    perror("sendfile: server terminated prematurely");
-                    exit(-1);
+		    perror("sendfile(): server terminated prematurely");
+                    return(-1);
                 }   
-	    }
-
-            if(n<0){
-                perror("sendfile: read error");
-                exit(-1);
-            }
-
-            ptr = buf;
-            code=parserespcode(&ptr);
-            if((code/100)==2)
-            {
-		printf("Put respond OK\n");
-		return 0;
+	    }else if(n<0){
+                perror("sendfile(): read error");
+                return(-1);
             }else{
-		printf("Put respond not OK\n");
-		return -1;
+                ptr = buf;
+                code=parserespcode(&ptr);
+                if((code/100)==2)
+                {
+		    printf("Put respond OK\n");
+		    return 0;
+                }else{
+		    printf("Put respond not OK\n");
+		    return -1;
+                }
             }
 	}
 
@@ -227,11 +245,10 @@ int sendfile(int fd, int sockfd){
 		FD_CLR(fd, &rset);
 		continue;
             }
-            if(writen(sockfd,buf,n)!=n)
+            if(writenwithtimeout(sockfd,buf,n,20)!=n)
             {
-                perror("writing local file data to socket failed");
                 close(fd);
-                exit(-1);
+                return(-1);
             }
         }
     }
@@ -286,6 +303,7 @@ ssize_t writen(int fd, const char *buf, size_t len){
     cnt = len;
     while((n=write(fd,ptr,cnt))>=0)
     {
+        write(1,">",1);
 	if(n<cnt)
 	{
 	    ptr+=n;
@@ -295,7 +313,35 @@ ssize_t writen(int fd, const char *buf, size_t len){
 	    return len;
 	}
     }
-    perror("write error");
+    if(errno==EPIPE)
+        perror("writen get EPIPE");
+    else perror("writen error");
+    return total;
+}
+
+ssize_t writenwithtimeout(int fd, const char *buf, size_t len, int sec){
+    int cnt, n, total;
+    const char * ptr=buf;
+    cnt = len;
+    while((n=writewithtimeout(fd,ptr,cnt,sec))>=0)
+    {
+        write(1,">",1);
+	if(n<cnt)
+	{
+	    ptr+=n;
+            total+=n;
+	    cnt-=n;
+	}else{
+	    return len;
+	}
+    }
+    if(n==-2){
+        printf("writenwithtimeout() timeout");
+        return -2;
+    }
+    if(errno==EPIPE)
+        perror("writen get EPIPE");
+    else perror("writen error");
     return total;
 }
 
@@ -391,5 +437,37 @@ int parsebodystart(char ** pptr){
         ptr+=4;
         *pptr=ptr;
         return 1;
+    }
+}
+
+ssize_t readwithtimeout(int sockfd, void *buf, size_t count, int sec){
+    fd_set rset;
+    struct timeval tv;
+    int maxfdp1=sockfd+1;
+
+    FD_ZERO(&rset);
+    FD_SET(sockfd, &rset);
+    tv.tv_sec = sec;
+    tv.tv_usec = 0;
+    if(select(maxfdp1, &rset, NULL, NULL, &tv)==0){
+        return -2;
+    }else{
+        return read(sockfd, buf, count);
+    }
+}
+
+ssize_t writewithtimeout(int sockfd, const void *buf, size_t count, int sec){
+    fd_set wset;
+    struct timeval tv;
+    int maxfdp1=sockfd+1;
+
+    FD_ZERO(&wset);
+    FD_SET(sockfd, &wset);
+    tv.tv_sec = sec;
+    tv.tv_usec = 0;
+    if(select(maxfdp1, NULL, &wset, NULL, &tv)==0){
+        return -2;
+    }else{
+        return write(sockfd, buf, count);
     }
 }
