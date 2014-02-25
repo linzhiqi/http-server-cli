@@ -26,7 +26,8 @@ int main(int argc, char *argv[])
     -h    show the usage\n\
 Example1: ./dnscli -u nwprog1.netlab.hut.fi:3000/index\n\
 Example2: ./dnscli -u nwprog1.netlab.hut.fi:3000/upload_011 -i my_download.txt\n\
-Example3: ./dnscli -u nwprog1.netlab.hut.fi:3000/upload_012 -o my_download.txt\n\n";
+Example3: ./dnscli -u nwprog1.netlab.hut.fi:3000/upload_012 -o my_download.txt\n\
+url:=[protocol://]+<hostname>+[:port number]+[resource location]\n\n";
 
     while ((c = getopt(argc, argv, ":hu:i:o:")) != -1) {
         
@@ -72,6 +73,10 @@ Example3: ./dnscli -u nwprog1.netlab.hut.fi:3000/upload_012 -o my_download.txt\n
         parse_url(url, port, host, location);
     }
     sockfd=tcp_connect(host,port);
+    if(sockfd==-1){
+        printf("tcp_connect() failed!\n");
+        return -1;
+    }
     if(iflg>0){
         if(fetch_body(sockfd,location,host,filePath,1)==0){
 	    printf("download success!\n");

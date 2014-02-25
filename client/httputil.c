@@ -76,42 +76,48 @@ void parse_url(const char *url, char *port, char *host, char *location){
  */
 int tcp_connect(const char *host, const char *serv)
 {
-	int				sockfd, n;
-	struct addrinfo	hints, *res, *ressave;
+    int				sockfd, n;
+    const char * addrstr;
+    char buf[128];
+    struct addrinfo	hints, *res, *ressave;
 
-	bzero(&hints, sizeof(struct addrinfo));
-	hints.ai_family = AF_UNSPEC;
-	hints.ai_socktype = SOCK_STREAM;
+    bzero(&hints, sizeof(struct addrinfo));
+    hints.ai_family = AF_UNSPEC;
+    hints.ai_socktype = SOCK_STREAM;
 
-	if ( (n = getaddrinfo(host, serv, &hints, &res)) != 0) {
-		fprintf(stderr, "getaddrinfo erro for %s, %s: %s\n",
-			host, serv, gai_strerror(n));
-		return -1;
-	}
-	ressave = res;
+    if ( (n = getaddrinfo(host, serv, &hints, &res)) != 0) {
+        fprintf(stderr, "getaddrinfo erro for server:%s service:%s %s!\n",
+        host, serv, gai_strerror(n));
+        return -1;
+    }
+    ressave = res;
 
-	do {
-		sockfd = socket(res->ai_family, res->ai_socktype,
-				res->ai_protocol);
-		if (sockfd < 0)
-			continue;	/* ignore this one */
+    do {
+        struct sockaddr_in *sin=(struct sockaddr_in *)res->ai_addr;
+        addrstr=inet_ntop(res->ai_family, &(sin->sin_addr),buf, sizeof(buf));
+        printf("Address is %s\n", addrstr);
 
-		if (connect(sockfd, res->ai_addr, res->ai_addrlen) == 0)
-			break;		/* success */
+        sockfd = socket(res->ai_family, res->ai_socktype,
+                    res->ai_protocol);
+        if (sockfd < 0)
+            continue;	/* ignore this one */
 
-		close(sockfd);	/* ignore this one */
-	} while ( (res = res->ai_next) != NULL);
+        if ((n=connect(sockfd, res->ai_addr, res->ai_addrlen)) == 0)
+            break;		/* success */
+	
+        close(sockfd);	/* ignore this one */
+    } while ( (res = res->ai_next) != NULL);
 
-	if (res == NULL) {	/* errno set from final connect() */
-		fprintf(stderr, "tcp_connect:no working addrinfo for %s, %s\n", host, serv);
-		sockfd = -1;
-	        perror("read error");
-		return -1;
-	}
+    if (res == NULL) {	/* errno set from final connect() */
+        fprintf(stderr, "tcp_connect:no working addrinfo for server:%s  service:%s\n", host, serv);
+        sockfd = -1;
+        perror("tcp_connect() error");
+        return -1;
+    }
 
-	freeaddrinfo(ressave);
+    freeaddrinfo(ressave);
 
-	return(sockfd);
+    return(sockfd);
 }
 
 
@@ -129,7 +135,7 @@ int fetch_body(int sockfd, char * res_location, const char * hostName, const cha
     size_t tobewritten;
 
     sprintf(httpMsg,"GET %s HTTP/1.1\r\nHost:%s\r\nIam: linzhiqi\r\n\r\n",res_location,hostName);
-    if(writen(sockfd,httpMsg,strlen(httpMsg))!=strlen(httpMsg))
+    if(writenwithtimeout(sockfd,httpMsg,strlen(httpMsg),10)!=strlen(httpMsg))
     {
         printf("GET message is not sent completely\n");
         close(sockfd);
@@ -137,7 +143,7 @@ int fetch_body(int sockfd, char * res_location, const char * hostName, const cha
     }
 
     memset(httpMsg,0,MAXMSGBUF);
-    while((n = readwithtimeout(sockfd, httpMsg, MAXMSGBUF-1,20))>0){
+    while((n = readwithtimeout(sockfd, httpMsg, MAXMSGBUF-1,10))>0){
         ptr=httpMsg;
         if(code==0){
             code=parserespcode(&ptr);
@@ -178,7 +184,7 @@ int fetch_body(int sockfd, char * res_location, const char * hostName, const cha
 	printf("connection is closed by server, however body is not received completely.\n");
 	return -1;
     }else if (n==-2){
-        printf("fetch_body() read timeout\n");
+        printf("fetch_body(): read time out!\n");
         return -1;
     }
     return 0;
@@ -215,7 +221,7 @@ int sendfile(int fd, int sockfd){
         if (FD_ISSET(sockfd, &rset)) {	/* socket is readable */
             if ( (n = read(sockfd, buf, MAXMSGBUF)) == 0) {
                 if (stdineof == 1){
-                    printf("local file written to socket completely, however server closed tcp without HTTP response\n");
+                    printf("local file written to socket completely, however server closed tcp without HTTP response.\n");
                     return -1;		/* only 2xx response received is considered as success */
                 }
 		else{
@@ -230,10 +236,10 @@ int sendfile(int fd, int sockfd){
                 code=parserespcode(&ptr);
                 if((code/100)==2)
                 {
-		    printf("Put respond OK\n");
+		    printf("Put respond OK.\n");
 		    return 0;
                 }else{
-		    printf("Put respond not OK\n");
+		    printf("Put respond not OK.\n");
 		    return -1;
                 }
             }
@@ -245,7 +251,7 @@ int sendfile(int fd, int sockfd){
 		FD_CLR(fd, &rset);
 		continue;
             }
-            if(writenwithtimeout(sockfd,buf,n,20)!=n)
+            if(writenwithtimeout(sockfd,buf,n,10)!=n)
             {
                 close(fd);
                 return(-1);
@@ -276,9 +282,9 @@ int upload_file(int sockfd, const char * res_location, const char * hostName, co
 
     sprintf(httpMsg,"PUT %s HTTP/1.1\r\nHost:%s\r\nIam: linzhiqi\r\nContent-Length: %ld\r\n\r\n",res_location,hostName,len);
 
-    if(writen(sockfd,httpMsg,strlen(httpMsg))!=strlen(httpMsg))
+    if(writenwithtimeout(sockfd,httpMsg,strlen(httpMsg),10)!=strlen(httpMsg))
     {
-        printf("PUT message is not sent completely\n");
+        printf("PUT headers are not sent completely!\n");
         close(sockfd);
         return -1;
     }
@@ -336,7 +342,7 @@ ssize_t writenwithtimeout(int fd, const char *buf, size_t len, int sec){
 	}
     }
     if(n==-2){
-        printf("writenwithtimeout() timeout");
+        printf("writenwithtimeout(): time out!\n");
         return -2;
     }
     if(errno==EPIPE)
@@ -450,6 +456,7 @@ ssize_t readwithtimeout(int sockfd, void *buf, size_t count, int sec){
     tv.tv_sec = sec;
     tv.tv_usec = 0;
     if(select(maxfdp1, &rset, NULL, NULL, &tv)==0){
+        printf("readwithtimeout(): time out!\n");
         return -2;
     }else{
         return read(sockfd, buf, count);
@@ -466,6 +473,7 @@ ssize_t writewithtimeout(int sockfd, const void *buf, size_t count, int sec){
     tv.tv_sec = sec;
     tv.tv_usec = 0;
     if(select(maxfdp1, NULL, &wset, NULL, &tv)==0){
+        printf("writewithtimeout(): time out!\n");
         return -2;
     }else{
         return write(sockfd, buf, count);
