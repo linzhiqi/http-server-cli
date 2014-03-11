@@ -34,6 +34,9 @@ ssize_t readwithtimeout(int sockfd, void *buf, size_t count, int sec);
 ssize_t writewithtimeout(int sockfd, const void *buf, size_t count, int sec);
 ssize_t writenwithtimeout(int fd, const char *buf, size_t len, int sec);
 
+
+char *root_path, *process_name, *port;
+
 /* url:=[protocol://]+<hostname>+[:port number]+[resource location] */
 void parse_url(const char *url, char *port, char *host, char *location){
     char buf[MAX_URL_LEN];
@@ -69,56 +72,7 @@ void parse_url(const char *url, char *port, char *host, char *location){
 }
 
 
-/*
- *host - tageted host name or ip address, support both ipv4 and ipv6
- *serv - service name or port number
- *return - the socket file handler	
- */
-int tcp_connect(const char *host, const char *serv)
-{
-    int				sockfd, n;
-    const char * addrstr;
-    char buf[128];
-    struct addrinfo	hints, *res, *ressave;
 
-    bzero(&hints, sizeof(struct addrinfo));
-    hints.ai_family = AF_UNSPEC;
-    hints.ai_socktype = SOCK_STREAM;
-
-    if ( (n = getaddrinfo(host, serv, &hints, &res)) != 0) {
-        fprintf(stderr, "getaddrinfo erro for server:%s service:%s %s!\n",
-        host, serv, gai_strerror(n));
-        return -1;
-    }
-    ressave = res;
-
-    do {
-        struct sockaddr_in *sin=(struct sockaddr_in *)res->ai_addr;
-        addrstr=inet_ntop(res->ai_family, &(sin->sin_addr),buf, sizeof(buf));
-        printf("Address is %s\n", addrstr);
-
-        sockfd = socket(res->ai_family, res->ai_socktype,
-                    res->ai_protocol);
-        if (sockfd < 0)
-            continue;	/* ignore this one */
-
-        if ((n=connect(sockfd, res->ai_addr, res->ai_addrlen)) == 0)
-            break;		/* success */
-	
-        close(sockfd);	/* ignore this one */
-    } while ( (res = res->ai_next) != NULL);
-
-    if (res == NULL) {	/* errno set from final connect() */
-        fprintf(stderr, "tcp_connect:no working addrinfo for server:%s  service:%s\n", host, serv);
-        sockfd = -1;
-        perror("tcp_connect() error");
-        return -1;
-    }
-
-    freeaddrinfo(ressave);
-
-    return(sockfd);
-}
 
 
 
@@ -190,17 +144,6 @@ int fetch_body(int sockfd, char * res_location, const char * hostName, const cha
     return 0;
 }
 
-int ignoresig(int signo){
-    struct sigaction	act, oact;
-    act.sa_handler=SIG_IGN;
-    sigemptyset(&act.sa_mask);
-    act.sa_flags = 0;
-    if (sigaction(signo, &act, &oact) < 0){
-        perror("ignoresig");
-        return -1;
-    }
-    return 0;
-}
 
 int sendfile(int fd, int file_size, int sockfd){
     fd_set rset;
@@ -315,57 +258,6 @@ int upload_file(int sockfd, const char * res_location, const char * hostName, co
 }
 
 
-/*
- * write the first len of bytes in buf to fd. It writes again if not all len of bytes are written.
- * error can happen, in this case, it returns how many bytes have been written and shows error info.
- */
-ssize_t writen(int fd, const char *buf, size_t len){
-    int cnt, n, total;
-    const char * ptr=buf;
-    cnt = len;
-    while((n=write(fd,ptr,cnt))>=0)
-    {
-        write(1,">",1);
-	if(n<cnt)
-	{
-	    ptr+=n;
-            total+=n;
-	    cnt-=n;
-	}else{
-	    return len;
-	}
-    }
-    if(errno==EPIPE)
-        perror("writen get EPIPE");
-    else perror("writen error");
-    return total;
-}
-
-ssize_t writenwithtimeout(int fd, const char *buf, size_t len, int sec){
-    int cnt, n, total;
-    const char * ptr=buf;
-    cnt = len;
-    while((n=writewithtimeout(fd,ptr,cnt,sec))>=0)
-    {
-        write(1,">",1);
-	if(n<cnt)
-	{
-	    ptr+=n;
-            total+=n;
-	    cnt-=n;
-	}else{
-	    return len;
-	}
-    }
-    if(n==-2){
-        printf("writenwithtimeout(): time out!\n");
-        return -2;
-    }
-    if(errno==EPIPE)
-        perror("writen get EPIPE");
-    else perror("writen error");
-    return total;
-}
 
 /*
  *get the part after the last '/' as file name
@@ -462,36 +354,204 @@ int parsebodystart(char ** pptr){
     }
 }
 
-ssize_t readwithtimeout(int sockfd, void *buf, size_t count, int sec){
-    fd_set rset;
-    struct timeval tv;
-    int maxfdp1=sockfd+1;
 
-    FD_ZERO(&rset);
-    FD_SET(sockfd, &rset);
-    tv.tv_sec = sec;
-    tv.tv_usec = 0;
-    if(select(maxfdp1, &rset, NULL, NULL, &tv)==0){
-        printf("readwithtimeout(): time out!\n");
-        return -2;
+
+
+/*
+ * input the string buffer to be parsed, and return the strings of method type and URI
+ */
+int parse_req_line(const char * req_line, char * method_ptr, char * uri_ptr){
+    char * ptr;
+    ptr=strstr(req_line, "GET");
+    if(ptr!=NULL && ptr==req_line){
+        strcpy(method_ptr, "GET");
+        ptr=strstr(req_line, "HTTP/1.");
+        strncpy(uri_ptr, req_line+4, (ptr-req_line)-4);
+        return 0;
+    }
+    ptr=strstr(req_line, "PUT");
+    if(ptr!=NULL && ptr==req_line){
+        strcpy(method_ptr, "PUT");
+        ptr=strstr(req_line, "HTTP/1.");
+        strncpy(uri_ptr, req_line+4, (ptr-req_line)-4);
+        return 0;
+    }
+    log_debug("Request line not supported:%s\n", req_line);
+    return -1;
+}
+
+int file_exist(const char *filename){
+    struct stat   fileinfo;   
+    return (stat (filename, &fileinfo) == 0);
+}
+
+int file_size(const char *filename){
+    int size=0;
+    struct stat fileinfo;
+    if(stat(filename, &fileinfo)==-1){
+        log_error("file_size()-stat() return error:%s\n",strerror(errno));
+        size=-1;
+    }
+    size=(int)fileinfo.st_size;
+    return size;
+}
+
+
+void serve_get(int connfd, const char * uri_ptr){
+    char * path;
+    struct node * file_node;
+    int fd, code=200;
+    char *reason="OK";
+    int filesize=0;
+    char headers[MAXHEADER+1];
+
+    /*obtain file path from uri_ptr*/
+    if(strcmp(uri_ptr,"/")){
+        path=strcat(root_path,"/index.html");
     }else{
-        return read(sockfd, buf, count);
+        path=strcat(root_path,uri_ptr);
+    }
+    /*lock the file node list*/
+    pthread_rwlock_wrlock(&fileListLock);
+    /*add node for this file if not exists yet*/
+    if( (file_node=getNode(path, fileList)) != NULL )){
+        /*lock read_lock*/
+        pthread_rwlock_rdlock(file_node->mylock);
+    }else if(file_exist(path)){
+        file_node = appendNode(uri_ptr, fileLinkedList);
+        pthread_rwlock_rdlock(file_node->mylock);
+    }else{
+        code=404;
+        reason="Not Found"
+    }
+    /*release the file node list*/
+    pthread_rwlock_unlock(&fileListLock);
+    if(code!=404) filesize=file_size(path);
+
+    /*create response*/
+    sprintf(headers,"HTTP/1.1 %d %s\r\nIam: linzhiqi\r\nContent-Type: text/plain\r\nContent-Length: %d\r\n\r\n",code,reason,filesize);
+    /*write response*/
+    if(writenwithtimeout(connfd,headers,strlen(headers),10)!=strlen(headers))
+    {
+        log_error("serve_get() headers are not sent completely!\n");
+        close(connfd);
+        exit;
+    }
+    if(code==404){
+        if(close(connfd)!=0) log_error("serve_get()-close(socket) error:",strerror(errno));
+        return;
+    }
+    /*open file, copy and write to client*/
+    if((fd=open(path,O_RDWR))==-1)
+    {
+        log_error("serve_get()-open() error:",strerror(errno));
+        exit;
+    }
+    sendfile(fd,filesize, connfd);
+    /*release read_lock*/
+    pthread_rwlock_unlock(file_node->mylock);
+    /*close socket*/
+    if(close(connfd)!=0) log_error("serve_get()-close(socket) error:",strerror(errno));
+}
+
+void serve_put(int sockfd, long contentLength, const char * uri_ptr){
+    char * path,*ptr;
+    struct node * file_node;
+    int fd, code=0;
+    char *reason;
+    int bodystartfl=0,len=-1;
+    char headers[MAXHEADER+1];
+    char httpMsg[MAXMSGBUF];
+    long int n=0,total,len;
+    /*obtain file path from uri_ptr*/
+    if(strcmp(uri_ptr,"/")){
+        code=400;
+        reason="Bad request";
+    }else{
+        path=strcat(root_path,uri_ptr);
+    }
+    
+    
+    /*lock the file node list*/
+    pthread_rwlock_wrlock(&fileListLock);
+    /*ftech write_lock for this file*/
+    if( (file_node=getNode(path, fileList)) != NULL )){
+        /*lock read_lock*/
+        pthread_rwlock_wrlock(file_node->mylock);
+    }else if(file_exist(path)){
+        file_node = appendNode(uri_ptr, fileLinkedList);
+        pthread_rwlock_wrlock(file_node->mylock);
+    }else{
+        code=404;
+        reason="Not Found"
+    }
+    /*release the file node list*/
+    pthread_rwlock_unlock(&fileListLock);
+    /*if content_length==0, remove the file
+      else, read body and overwrite the file*/
+    while((n = readwithtimeout(sockfd, httpMsg, MAXMSGBUF-1,10))>0){
+        ptr=httpMsg;
+        /*read and obtain content_length*/
+        if(len==-1){
+            len=parselength(&ptr);
+        }
+        /*read to the first byte of body*/
+        if(bodystartfl==0){
+            bodystartfl=parsebodystart(&ptr);
+        }
+        if(len==0){
+            if(!file_exist(path)){
+	        code = 404;
+	        reason = "Not Found";
+            }else{
+                unlink(path);
+	        code = 200;
+	        reason = "OK";
+	    }
+            break;
+        }
+	if((fd=creat(path,S_IRWXO|S_IRWXG|S_IRWXU))==-1)
+	{
+	    log_error("serve_put()-create() error:%s\n",strerr(errno));
+	    code=500;
+            reason="Internal Error";
+        }
+        if(writen(fd,ptr,n)!=tobewritten)
+        {
+            log_error("serve_put()-writen():data written to file is not completed\n");
+            close(fd);
+            code=500;
+            reason="Internal Error";
+        }
+        total+=n;
+        if(total>=len)
+	{
+            code=201;
+            reason="Created";
+	}
+        if(code!=0){
+	    /*create response*/
+    	    sprintf(headers,"HTTP/1.1 %d %s\r\nIam: linzhiqi\r\nContent-Type: text/plain\r\nContent-Length: %d\r\n\r\n",code,reason,filesize);
+    	    /*write response*/
+    	    if(writenwithtimeout(sockfd,headers,strlen(headers),10)!=strlen(headers))
+    	    {
+        	log_error("serve_get() headers are not sent completely!\n");
+        	close(sockfd);
+        	exit;
+    	    }
+            break;
+        }
+        memset(httpMsg,0,MAXMSGBUF);
+    }
+
+    /*release write_lock*/
+    pthread_rwlock_unlock(file_node->mylock);
+    /*delete the corresponding node from file list if the file is removed*/
+    
+    if(code==200){
+        pthread_rwlock_wrlock(&fileListLock);
+        deleteNode(file_node);
+        pthread_rwlock_unlock(&fileListLock);
     }
 }
 
-ssize_t writewithtimeout(int sockfd, const void *buf, size_t count, int sec){
-    fd_set wset;
-    struct timeval tv;
-    int maxfdp1=sockfd+1;
-
-    FD_ZERO(&wset);
-    FD_SET(sockfd, &wset);
-    tv.tv_sec = sec;
-    tv.tv_usec = 0;
-    if(select(maxfdp1, NULL, &wset, NULL, &tv)==0){
-        printf("writewithtimeout(): time out!\n");
-        return -2;
-    }else{
-        return write(sockfd, buf, count);
-    }
-}
