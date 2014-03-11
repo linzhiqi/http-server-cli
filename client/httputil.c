@@ -202,10 +202,10 @@ int ignoresig(int signo){
     return 0;
 }
 
-int sendfile(int fd, int sockfd){
+int sendfile(int fd, int file_size, int sockfd){
     fd_set rset;
-    int maxfdp1, stdineof, code, n;
-    char buf[MAXMSGBUF], *ptr;
+    int maxfdp1, stdineof, code, n, total;
+    char buf[200], *ptr;
     
     stdineof = 0;
     FD_ZERO(&rset);
@@ -220,19 +220,16 @@ int sendfile(int fd, int sockfd){
 
         if (FD_ISSET(sockfd, &rset)) {	/* socket is readable */
             if ( (n = read(sockfd, buf, MAXMSGBUF)) == 0) {
-                if (stdineof == 1){
-                    printf("local file written to socket completely, however server closed tcp without HTTP response.\n");
-                    return -1;		/* only 2xx response received is considered as success */
-                }
-		else{
-		    perror("sendfile(): server terminated prematurely");
-                    return(-1);
-                }   
+		log_error("sendfile()-read() server terminated prematurely; error:%s\n",strerr(errno));
+                return(-1);
+                
 	    }else if(n<0){
-                perror("sendfile(): read error");
+                log_error("sendfile()-read() error:%s\n",strerr(errno));
                 return(-1);
             }else{
-                ptr = buf;
+		log_error("sendfile() received response before sending complete; response:%s\n",buf);
+                return -1;
+                /*ptr = buf;
                 code=parserespcode(&ptr);
                 if((code/100)==2)
                 {
@@ -241,7 +238,7 @@ int sendfile(int fd, int sockfd){
                 }else{
 		    printf("Put respond not OK.\n");
 		    return -1;
-                }
+                }*/
             }
 	}
 
@@ -251,11 +248,15 @@ int sendfile(int fd, int sockfd){
 		FD_CLR(fd, &rset);
 		continue;
             }
+            tmp = total+n;
+            if(tmp>file_size) n = file_size-total;
             if(writenwithtimeout(sockfd,buf,n,10)!=n)
             {
                 close(fd);
                 return(-1);
             }
+            total+=n;
+            if(total>=file_size) return 0;
         }
     }
 }
@@ -268,7 +269,7 @@ int upload_file(int sockfd, const char * res_location, const char * hostName, co
 {
     long int len=0;
     char httpMsg[MAXMSGBUF];
-    int fd;
+    int fd,ret,code;
     
     struct stat fileinfo;
 
@@ -295,7 +296,22 @@ int upload_file(int sockfd, const char * res_location, const char * hostName, co
         return -1;
     }
 
-    return sendfile(fd, sockfd);
+    ret=sendfile(fd, len, sockfd);
+    if(ret==0){
+        readline_timeout(sockfd,httpMsg,10);
+        code=parserespcode(&httpMsg);
+        close(sockfd);
+        if((code/100)==2)
+        {
+            log_debug("Put respond OK.\n");
+	    return 0;
+        }else{
+	    log_error("Put respond not OK.\n");
+	    return -1;
+        }
+    }else{
+        return -1;
+    }
 }
 
 
