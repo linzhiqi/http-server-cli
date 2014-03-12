@@ -5,15 +5,13 @@
 
 #define MAXFILENAME 100
 
-struct node * fileLinkedList = createFileList();
-pthread_rwlock_t fileListLock;
-
 struct node {
   char fileName[MAXFILENAME];
   pthread_rwlock_t * mylock;
   struct node * pre;
   struct node * next;
 };
+void init_file_list();
 struct node * createFileList();
 struct node * appendNode(const char * fileName, struct node * elderNode);
 struct node * deleteNode(struct node * nodeToDelete);

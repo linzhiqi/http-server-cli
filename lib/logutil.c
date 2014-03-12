@@ -1,3 +1,6 @@
+#include <syslog.h>
+#include <stdarg.h>
+#include <stdio.h>
 
 int http_server_tosyslog=1;
 

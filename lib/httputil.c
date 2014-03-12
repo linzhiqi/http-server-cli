@@ -12,6 +12,12 @@
 #include <math.h>
 #include <signal.h>
 #include <errno.h>
+#include <pthread.h>
+#include "logutil.h"
+#include "util.h"
+#include "tcputil.h"
+#include "linkedlist.h"
+
 
 #define MAXFILENAME 100
 #define MAXHOSTNAME 200
@@ -19,6 +25,7 @@
 #define MAX_PORT_LEN 5
 #define MAX_LOCATION_LEN 200
 #define MAXMSGBUF 5000
+#define MAXHEADER 1000
 #define DEFAULT_FILE_NAME "downloaded_file"
 #ifndef max
 #define max(a,b)            (((a) < (b)) ? (b) : (a))
@@ -27,15 +34,15 @@
 ssize_t writen(int fd, const char *buf, size_t len);
 char *getFileFromRes(char * file_name, const char * res_location);
 int getofd(const char * res_location, const char *local_path, int store_data);
-int parserespcode(char ** pptr);
+int parserespcode(char * buf);
 long parselength(char ** pptr);
 int parsebodystart(char ** pptr);
 ssize_t readwithtimeout(int sockfd, void *buf, size_t count, int sec);
 ssize_t writewithtimeout(int sockfd, const void *buf, size_t count, int sec);
 ssize_t writenwithtimeout(int fd, const char *buf, size_t len, int sec);
 
-
-char *root_path, *process_name, *port;
+extern pthread_rwlock_t fileListLock;
+extern struct node * fileLinkedList;
 
 /* url:=[protocol://]+<hostname>+[:port number]+[resource location] */
 void parse_url(const char *url, char *port, char *host, char *location){
@@ -100,7 +107,7 @@ int fetch_body(int sockfd, char * res_location, const char * hostName, const cha
     while((n = readwithtimeout(sockfd, httpMsg, MAXMSGBUF-1,10))>0){
         ptr=httpMsg;
         if(code==0){
-            code=parserespcode(&ptr);
+            code=parserespcode(ptr);
         }
         if(len==-1){
             len=parselength(&ptr);
@@ -147,13 +154,14 @@ int fetch_body(int sockfd, char * res_location, const char * hostName, const cha
 
 int sendfile(int fd, int file_size, int sockfd){
     fd_set rset;
-    int maxfdp1, stdineof, code, n, total;
-    char buf[200], *ptr;
+    int maxfdp1, stdineof, n, total, tmp;
+    char buf[MAXMSGBUF];
     
     stdineof = 0;
     FD_ZERO(&rset);
     ignoresig(SIGPIPE);
     for ( ; ; ) {
+        memset(buf,0,MAXMSGBUF);
         if (stdineof == 0)
             FD_SET(fd, &rset);
         FD_SET(sockfd, &rset);
@@ -163,11 +171,11 @@ int sendfile(int fd, int file_size, int sockfd){
 
         if (FD_ISSET(sockfd, &rset)) {	/* socket is readable */
             if ( (n = read(sockfd, buf, MAXMSGBUF)) == 0) {
-		log_error("sendfile()-read() server terminated prematurely; error:%s\n",strerr(errno));
+		log_error("sendfile()-read() server terminated prematurely; error:%s\n",strerror(errno));
                 return(-1);
                 
 	    }else if(n<0){
-                log_error("sendfile()-read() error:%s\n",strerr(errno));
+                log_error("sendfile()-read() error:%s\n",strerror(errno));
                 return(-1);
             }else{
 		log_error("sendfile() received response before sending complete; response:%s\n",buf);
@@ -241,8 +249,8 @@ int upload_file(int sockfd, const char * res_location, const char * hostName, co
 
     ret=sendfile(fd, len, sockfd);
     if(ret==0){
-        readline_timeout(sockfd,httpMsg,10);
-        code=parserespcode(&httpMsg);
+        readline_timeout(sockfd,httpMsg,MAXMSGBUF,10);
+        code=parserespcode(httpMsg);
         close(sockfd);
         if((code/100)==2)
         {
@@ -307,17 +315,16 @@ int getofd(const char * res_location, const char *local_path, int store_data){
  * return the response code if it's found in the string *pptr, and move its starting place to the first char after the code. 
  * if code string is not found in the string, return 0 and leave the string un-changed.
  */
-int parserespcode(char ** pptr){
+int parserespcode(char * buf){
     int code=0;
     char * ptr;
-    ptr=strstr(*pptr,"HTTP/1.1");
+    ptr=strstr(buf,"HTTP/1.1");
     if(ptr==NULL){
         return code;
     }
     ptr+=8;
     /*get the response code*/
     code=(int)strtol(ptr,&ptr,10);
-    *pptr=ptr;
     return code;
 }
 
@@ -366,14 +373,14 @@ int parse_req_line(const char * req_line, char * method_ptr, char * uri_ptr){
     if(ptr!=NULL && ptr==req_line){
         strcpy(method_ptr, "GET");
         ptr=strstr(req_line, "HTTP/1.");
-        strncpy(uri_ptr, req_line+4, (ptr-req_line)-4);
+        strncpy(uri_ptr, req_line+4, (ptr-req_line)-5);
         return 0;
     }
     ptr=strstr(req_line, "PUT");
     if(ptr!=NULL && ptr==req_line){
         strcpy(method_ptr, "PUT");
         ptr=strstr(req_line, "HTTP/1.");
-        strncpy(uri_ptr, req_line+4, (ptr-req_line)-4);
+        strncpy(uri_ptr, req_line+4, (ptr-req_line)-5);
         return 0;
     }
     log_debug("Request line not supported:%s\n", req_line);
@@ -382,14 +389,14 @@ int parse_req_line(const char * req_line, char * method_ptr, char * uri_ptr){
 
 int file_exist(const char *filename){
     struct stat   fileinfo;   
-    return (stat (filename, &fileinfo) == 0);
+    return (stat(filename, &fileinfo) == 0);
 }
 
 int file_size(const char *filename){
     int size=0;
     struct stat fileinfo;
     if(stat(filename, &fileinfo)==-1){
-        log_error("file_size()-stat() return error:%s\n",strerror(errno));
+        log_error("file_size()-stat() file '%s' return error:%s\n",filename,strerror(errno));
         size=-1;
     }
     size=(int)fileinfo.st_size;
@@ -397,24 +404,27 @@ int file_size(const char *filename){
 }
 
 
-void serve_get(int connfd, const char * uri_ptr){
+void serve_get(int connfd, char * root_path, const char * uri_ptr){
     char * path;
     struct node * file_node;
     int fd, code=200;
     char *reason="OK";
     int filesize=0;
     char headers[MAXHEADER+1];
-
+    log_debug("root_path: %s\n",root_path);
     /*obtain file path from uri_ptr*/
-    if(strcmp(uri_ptr,"/")){
+    if(strcmp(uri_ptr,"/")==0){
         path=strcat(root_path,"/index.html");
     }else{
         path=strcat(root_path,uri_ptr);
     }
+    log_debug("path: %s, exits?%d, size:%d\n", path, file_exist(path),file_size(path));
+
+    init_file_list();
     /*lock the file node list*/
     pthread_rwlock_wrlock(&fileListLock);
     /*add node for this file if not exists yet*/
-    if( (file_node=getNode(path, fileList)) != NULL )){
+    if( (file_node=getNode(path, fileLinkedList)) != NULL ){
         /*lock read_lock*/
         pthread_rwlock_rdlock(file_node->mylock);
     }else if(file_exist(path)){
@@ -422,7 +432,7 @@ void serve_get(int connfd, const char * uri_ptr){
         pthread_rwlock_rdlock(file_node->mylock);
     }else{
         code=404;
-        reason="Not Found"
+        reason="Not Found";
     }
     /*release the file node list*/
     pthread_rwlock_unlock(&fileListLock);
@@ -430,12 +440,13 @@ void serve_get(int connfd, const char * uri_ptr){
 
     /*create response*/
     sprintf(headers,"HTTP/1.1 %d %s\r\nIam: linzhiqi\r\nContent-Type: text/plain\r\nContent-Length: %d\r\n\r\n",code,reason,filesize);
+    log_debug(headers);
     /*write response*/
     if(writenwithtimeout(connfd,headers,strlen(headers),10)!=strlen(headers))
     {
         log_error("serve_get() headers are not sent completely!\n");
         close(connfd);
-        exit;
+        exit(-1);
     }
     if(code==404){
         if(close(connfd)!=0) log_error("serve_get()-close(socket) error:",strerror(errno));
@@ -445,7 +456,7 @@ void serve_get(int connfd, const char * uri_ptr){
     if((fd=open(path,O_RDWR))==-1)
     {
         log_error("serve_get()-open() error:",strerror(errno));
-        exit;
+        exit(-1);;
     }
     sendfile(fd,filesize, connfd);
     /*release read_lock*/
@@ -454,15 +465,16 @@ void serve_get(int connfd, const char * uri_ptr){
     if(close(connfd)!=0) log_error("serve_get()-close(socket) error:",strerror(errno));
 }
 
-void serve_put(int sockfd, long contentLength, const char * uri_ptr){
+void serve_put(int sockfd, char * root_path, const char * uri_ptr){
     char * path,*ptr;
     struct node * file_node;
     int fd, code=0;
     char *reason;
-    int bodystartfl=0,len=-1;
+    int bodystartfl=0;
     char headers[MAXHEADER+1];
     char httpMsg[MAXMSGBUF];
-    long int n=0,total,len;
+    long int n=0,total,len=-1;
+
     /*obtain file path from uri_ptr*/
     if(strcmp(uri_ptr,"/")){
         code=400;
@@ -471,11 +483,11 @@ void serve_put(int sockfd, long contentLength, const char * uri_ptr){
         path=strcat(root_path,uri_ptr);
     }
     
-    
+    init_file_list();
     /*lock the file node list*/
     pthread_rwlock_wrlock(&fileListLock);
     /*ftech write_lock for this file*/
-    if( (file_node=getNode(path, fileList)) != NULL )){
+    if( (file_node=getNode(path, fileLinkedList)) != NULL ){
         /*lock read_lock*/
         pthread_rwlock_wrlock(file_node->mylock);
     }else if(file_exist(path)){
@@ -483,7 +495,7 @@ void serve_put(int sockfd, long contentLength, const char * uri_ptr){
         pthread_rwlock_wrlock(file_node->mylock);
     }else{
         code=404;
-        reason="Not Found"
+        reason="Not Found";
     }
     /*release the file node list*/
     pthread_rwlock_unlock(&fileListLock);
@@ -512,11 +524,11 @@ void serve_put(int sockfd, long contentLength, const char * uri_ptr){
         }
 	if((fd=creat(path,S_IRWXO|S_IRWXG|S_IRWXU))==-1)
 	{
-	    log_error("serve_put()-create() error:%s\n",strerr(errno));
+	    log_error("serve_put()-create() error:%s\n",strerror(errno));
 	    code=500;
             reason="Internal Error";
         }
-        if(writen(fd,ptr,n)!=tobewritten)
+        if(writen(fd,ptr,n)!=n)
         {
             log_error("serve_put()-writen():data written to file is not completed\n");
             close(fd);
@@ -530,20 +542,11 @@ void serve_put(int sockfd, long contentLength, const char * uri_ptr){
             reason="Created";
 	}
         if(code!=0){
-	    /*create response*/
-    	    sprintf(headers,"HTTP/1.1 %d %s\r\nIam: linzhiqi\r\nContent-Type: text/plain\r\nContent-Length: %d\r\n\r\n",code,reason,filesize);
-    	    /*write response*/
-    	    if(writenwithtimeout(sockfd,headers,strlen(headers),10)!=strlen(headers))
-    	    {
-        	log_error("serve_get() headers are not sent completely!\n");
-        	close(sockfd);
-        	exit;
-    	    }
             break;
         }
         memset(httpMsg,0,MAXMSGBUF);
     }
-
+   
     /*release write_lock*/
     pthread_rwlock_unlock(file_node->mylock);
     /*delete the corresponding node from file list if the file is removed*/
@@ -552,6 +555,16 @@ void serve_put(int sockfd, long contentLength, const char * uri_ptr){
         pthread_rwlock_wrlock(&fileListLock);
         deleteNode(file_node);
         pthread_rwlock_unlock(&fileListLock);
+    }
+
+    /*create response*/
+    sprintf(headers,"HTTP/1.1 %d %s\r\nIam: linzhiqi\r\nContent-Type: text/plain\r\nContent-Length: %d\r\n\r\n",code,reason,0);
+    /*write response*/
+    if(writenwithtimeout(sockfd,headers,strlen(headers),10)!=strlen(headers))
+    {
+        log_error("serve_get() headers are not sent completely!\n");
+        close(sockfd);
+        exit(-1);
     }
 }
 

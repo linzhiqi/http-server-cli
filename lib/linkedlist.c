@@ -3,6 +3,13 @@
 #include "linkedlist.h"
 #include <string.h>
 
+struct node * fileLinkedList;
+pthread_rwlock_t fileListLock;
+
+void init_file_list(){
+    if(fileLinkedList==NULL)
+        fileLinkedList=createFileList();
+}
 
 struct node * createFileList()
 {

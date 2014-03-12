@@ -14,23 +14,30 @@
 #include <netdb.h>
 #include <arpa/inet.h>
 
-#define LISTENQ 5
-#define MAXCONNECTION 50
+#include "lib/httputil.h"
+#include "lib/tcputil.h"
+#include "lib/logutil.h"
+#include "lib/linkedlist.h"
+#include "lib/util.h"
 
-int daemon_init(const char *pname, int facility);
-extern int http_server_tosyslog=1;
+
+
+
+#define MAXCONNECTION 50
+#define PROCESS_NAME_DEFAULT "http-server"
+#define MAXMSGBUF 5000
 void start_server(const char* process_name, const char * port, const char * root_path, const int debugflg);
 void *serve(void *arg);
 
-
-extern struct node * fileLinkedList;
-extern char *root_path, *process_name, *port;
+extern int http_server_tosyslog;
+char * root_path;
 
 int main(int argc, char *argv[])
 {
     int c, portflg=0, debugflg=0;
     extern char *optarg;
     extern int optind, optopt;
+    char *process_name=PROCESS_NAME_DEFAULT, *port;
 
     char * usage_msg = 
 "\nUsage: ./httpserver [-n] <-p> [-r] [-d] [-h]\n\
@@ -42,6 +49,8 @@ int main(int argc, char *argv[])
 Example1: ./httpserver -p 3000\n\
 Example2: ./httpserver -p 3000 -d\n\
 Example3: ./httpserver -p 3000 -r /home/NAME/my_server_root/\n\n";
+
+    http_server_tosyslog=1;
 
     while ((c = getopt(argc, argv, ":hdn:p:r:")) != -1) {
         
@@ -69,7 +78,8 @@ Example3: ./httpserver -p 3000 -r /home/NAME/my_server_root/\n\n";
 	    exit(0);
         case ':':
             if(optopt=='r'){
-                root_path=NULL;
+                printf("%s",usage_msg);
+	        exit(0);
             }else if(optopt=='n'){
                 process_name="http-server-zhiqi";
             }else{
@@ -137,30 +147,31 @@ void start_server(const char* process_name, const char * port, const char * root
 
 void serve_process(int connfd)
 {
-    char httpMsg[MAXMSGBUF], method[20], uri[MAX_LOCATION_LEN];
-    int req_line_flg=0;
+    char linebuf[500], httpMsg[MAXMSGBUF] ,method[20], uri[MAX_LOCATION_LEN];
     log_debug("I am %d, my socket descriptor is %d, bye!\n",(int)getpid(), connfd);
 
-    memset(httpMsg,0,MAXMSGBUF);
-    readline_timeout(connfd, httpMsg, 10);
+    memset(linebuf,0,500);
+    memset(method,0,20);
+    memset(uri,0,MAX_LOCATION_LEN);
+    readline_timeout(connfd, linebuf, 500, 10);
+    log_debug("readline() returns: %s", linebuf);
     /*read request line*/ 
-    if(parse_req_line(httpMsg, method, uri)==-1){
+    if(parse_req_line(linebuf, method, uri)==-1){
         /*send erro response*/
         return;
     }
+    log_debug("method: %s\nuri: %s\n", method,uri);
 
-    switch(method){
-        case "GET":
-            /*serve GET*/
-            serve_get(connfd, uri);
-            break;
-        case "PUT":
-            /*serve PUT*/
-            serve_put(connfd, uri);
-            break;
-        default:
-            /*this method is not supported*/
-            break;
+    if(strcmp(method,"GET")==0){
+        /*serve GET*/
+        /*read up the reqeust message*/
+        readwithtimeout(connfd, httpMsg, MAXMSGBUF,10);
+        serve_get(connfd, root_path, uri);
+    }else if(strcmp(method,"PUT")==0){
+        /*serve PUT*/
+        serve_put(connfd, root_path, uri);
+    }else{
+        /*this method is not supported*/
     }
 }
 

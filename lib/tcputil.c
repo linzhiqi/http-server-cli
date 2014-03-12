@@ -1,6 +1,20 @@
+#include <sys/socket.h>
+#include <strings.h>
+#include <netdb.h>
+#include <stdio.h>
+#include <arpa/inet.h>
+#include <unistd.h>
+#include <string.h>
+#include <sys/types.h>
+#include <stdlib.h>
+#include <sys/stat.h>
+#include <fcntl.h>
 
+#include <signal.h>
+#include <errno.h>
+#include "logutil.h"
 
-
+#define LISTENQ 10
 
 /*
  *host - tageted host name or ip address, support both ipv4 and ipv6
@@ -79,6 +93,23 @@ ssize_t writen(int fd, const char *buf, size_t len){
     return total;
 }
 
+ssize_t writewithtimeout(int sockfd, const void *buf, size_t count, int sec){
+    fd_set wset;
+    struct timeval tv;
+    int maxfdp1=sockfd+1;
+
+    FD_ZERO(&wset);
+    FD_SET(sockfd, &wset);
+    tv.tv_sec = sec;
+    tv.tv_usec = 0;
+    if(select(maxfdp1, NULL, &wset, NULL, &tv)==0){
+        printf("writewithtimeout(): time out!\n");
+        return -2;
+    }else{
+        return write(sockfd, buf, count);
+    }
+}
+
 ssize_t writenwithtimeout(int fd, const char *buf, size_t len, int sec){
     int cnt, n, total;
     const char * ptr=buf;
@@ -123,24 +154,6 @@ ssize_t readwithtimeout(int sockfd, void *buf, size_t count, int sec){
         return read(sockfd, buf, count);
     }
 }
-
-ssize_t writewithtimeout(int sockfd, const void *buf, size_t count, int sec){
-    fd_set wset;
-    struct timeval tv;
-    int maxfdp1=sockfd+1;
-
-    FD_ZERO(&wset);
-    FD_SET(sockfd, &wset);
-    tv.tv_sec = sec;
-    tv.tv_usec = 0;
-    if(select(maxfdp1, NULL, &wset, NULL, &tv)==0){
-        printf("writewithtimeout(): time out!\n");
-        return -2;
-    }else{
-        return write(sockfd, buf, count);
-    }
-}
-
 
 /*
  * copied from course example
@@ -237,18 +250,15 @@ char * sock_ntop(const struct sockaddr *sa, socklen_t salen){
 }
 
 
-int readline_timeout(int ifd, char * buf, int timeout){
+int readline_timeout(int ifd, char * buf, int max, int sec){
     struct timeval tv;
     fd_set readfds;
-    int n=0, i=0, buflen;
-    char * tmp,;
-
-    buflen=sizeof(buf);
-    tv.tv_sec = timeout;
+    int n=0, i=0;
+    tv.tv_sec = sec;
     tv.tv_usec = 0;
     FD_ZERO(&readfds);
     FD_SET(ifd, &readfds);
-    memset(buf,0,buflen);
+    memset(buf,0,max);
 
     if(select(ifd+1, &readfds, NULL, NULL, &tv)==0){
         log_error("readwithtimeout(): time out!\n");
@@ -256,29 +266,28 @@ int readline_timeout(int ifd, char * buf, int timeout){
     }
 
     if(FD_ISSET(ifd,&readfds)){
-        tmp=buf;
         while(1){
-	    if(i>buflen){
+	    if(i>max){
 		log_debug("line input exceeds the buffer\n");
 		return -1;
 	    }
 	    n=read(ifd,buf,1);
-	    //printf("debug: header=%s\n",header);
 	    if(n==1){		
-		if((buf[i]=='\n')){
+		if(((*buf)=='\n')){
 		    return i+1;
 		}
-		i++;
-		buf++;
+            i++;
+            buf++;
 	    }else if(n==0){
-		log_error("connection is closed!1\ni=%d sockfd=%d\n",i,sockfd);	
-		close(sockfd);
+		log_error("connection is closed!1\ni=%d sockfd=%d\n",i,ifd);	
+		close(ifd);
 		return -1;
 	    }else{
 		log_error("readline_timeout()-read() return error:%s\n",strerror(errno));
-		close(sockfd);
+		close(ifd);
 		return -1;
 	    }
 	}
     }
+    return 0;
 }
