@@ -142,7 +142,7 @@ int fetch_body(int sockfd, char * res_location, const char * hostName, const cha
 	perror("read error");
 	return -1;
     }else if (n==0){
-	printf("connection is closed by server, however body is not received completely.\n");
+	printf("fetch_body(): connection prematurely closed.\n");
 	return -1;
     }else if (n==-2){
         printf("fetch_body(): read time out!\n");
@@ -154,14 +154,15 @@ int fetch_body(int sockfd, char * res_location, const char * hostName, const cha
 
 int sendfile(int fd, int file_size, int sockfd){
     fd_set rset;
-    int maxfdp1, stdineof, n, total, tmp;
-    char buf[MAXMSGBUF];
+    int maxfdp1, stdineof, n, total=0, tmp;
+    char buf[MAXMSGBUF+1],err_buf[501];
     
+    memset(err_buf,0,501);
     stdineof = 0;
     FD_ZERO(&rset);
     ignoresig(SIGPIPE);
     for ( ; ; ) {
-        memset(buf,0,MAXMSGBUF);
+        memset(buf,0,MAXMSGBUF+1);
         if (stdineof == 0)
             FD_SET(fd, &rset);
         FD_SET(sockfd, &rset);
@@ -171,11 +172,11 @@ int sendfile(int fd, int file_size, int sockfd){
 
         if (FD_ISSET(sockfd, &rset)) {	/* socket is readable */
             if ( (n = read(sockfd, buf, MAXMSGBUF)) == 0) {
-		log_error("sendfile()-read() server terminated prematurely; error:%s\n",strerror(errno));
+		log_error("sendfile()-read() server terminated prematurely; error:%s\n",strerror_r(errno,err_buf,500));
                 return(-1);
                 
 	    }else if(n<0){
-                log_error("sendfile()-read() error:%s\n",strerror(errno));
+                log_error("sendfile()-read() error:%s\n",strerror_r(errno,err_buf,500));
                 return(-1);
             }else{
 		log_error("sendfile() received response before sending complete; response:%s\n",buf);
@@ -199,6 +200,7 @@ int sendfile(int fd, int file_size, int sockfd){
 		FD_CLR(fd, &rset);
 		continue;
             }
+            
             tmp = total+n;
             if(tmp>file_size) n = file_size-total;
             if(writenwithtimeout(sockfd,buf,n,10)!=n)
@@ -207,7 +209,10 @@ int sendfile(int fd, int file_size, int sockfd){
                 return(-1);
             }
             total+=n;
-            if(total>=file_size) return 0;
+            if(total>=file_size){
+                close(fd);
+                return 0;
+            }
         }
     }
 }
@@ -368,7 +373,8 @@ int parsebodystart(char ** pptr){
  * input the string buffer to be parsed, and return the strings of method type and URI
  */
 int parse_req_line(const char * req_line, char * method_ptr, char * uri_ptr){
-    char * ptr;
+    char err_buf[501], * ptr;
+    memset(err_buf,0,501);
     ptr=strstr(req_line, "GET");
     if(ptr!=NULL && ptr==req_line){
         strcpy(method_ptr, "GET");
@@ -394,9 +400,11 @@ int file_exist(const char *filename){
 
 int file_size(const char *filename){
     int size=0;
+    char err_buf[501];
     struct stat fileinfo;
+    memset(err_buf,0,501);
     if(stat(filename, &fileinfo)==-1){
-        log_error("file_size()-stat() file '%s' return error:%s\n",filename,strerror(errno));
+        log_error("file_size()-stat() file '%s' return error:%s\n",filename,strerror_r(errno,err_buf,500));
         size=-1;
     }
     size=(int)fileinfo.st_size;
@@ -404,22 +412,26 @@ int file_size(const char *filename){
 }
 
 
-void serve_get(int connfd, char * root_path, const char * uri_ptr){
-    char * path;
+void serve_get(int connfd, const char * root_path, const char * uri_ptr){
+    char path[MAX_LOCATION_LEN];
     struct node * file_node;
     int fd, code=200;
     char *reason="OK";
     int filesize=0;
-    char headers[MAXHEADER+1];
+    char headers[MAXHEADER+1], err_buf[501];
+    memset(err_buf,0,501);
+    memset(headers,0,MAXHEADER+1);
     log_debug("root_path: %s\n",root_path);
     /*obtain file path from uri_ptr*/
     if(strcmp(uri_ptr,"/")==0){
-        path=strcat(root_path,"/index.html");
+        strcat(path,"/index.html");
     }else{
-        path=strcat(root_path,uri_ptr);
+        strcpy(path,root_path);
+        strcat(path,uri_ptr);
     }
     log_debug("path: %s, exits?%d, size:%d\n", path, file_exist(path),file_size(path));
-
+    /*read up the reqeust message*/
+    readwithtimeout(connfd, headers, MAXHEADER,10);
     init_file_list();
     /*lock the file node list*/
     pthread_rwlock_wrlock(&fileListLock);
@@ -449,38 +461,41 @@ void serve_get(int connfd, char * root_path, const char * uri_ptr){
         exit(-1);
     }
     if(code==404){
-        if(close(connfd)!=0) log_error("serve_get()-close(socket) error:",strerror(errno));
+        if(close(connfd)!=0) log_error("serve_get()-close(socket) error:%s\n",strerror_r(errno,err_buf,500));
         return;
     }
     /*open file, copy and write to client*/
     if((fd=open(path,O_RDWR))==-1)
     {
-        log_error("serve_get()-open() error:",strerror(errno));
+        log_error("serve_get()-open() error:%s\n",strerror_r(errno,err_buf,500));
         exit(-1);;
     }
     sendfile(fd,filesize, connfd);
     /*release read_lock*/
     pthread_rwlock_unlock(file_node->mylock);
+    
     /*close socket*/
-    if(close(connfd)!=0) log_error("serve_get()-close(socket) error:",strerror(errno));
+    if(close(connfd)!=0) log_error("serve_get()-close(socket) error:%s\n",strerror_r(errno,err_buf,500));
 }
 
-void serve_put(int sockfd, char * root_path, const char * uri_ptr){
-    char * path,*ptr;
+void serve_put(int sockfd, const char * root_path, const char * uri_ptr){
+    char path[MAX_LOCATION_LEN],err_buf[501],*ptr;
     struct node * file_node;
     int fd, code=0;
     char *reason;
     int bodystartfl=0;
-    char headers[MAXHEADER+1];
+    char headers[MAXHEADER];
     char httpMsg[MAXMSGBUF];
     long int n=0,total,len=-1;
 
+    memset(err_buf,0,501);
     /*obtain file path from uri_ptr*/
     if(strcmp(uri_ptr,"/")){
         code=400;
         reason="Bad request";
     }else{
-        path=strcat(root_path,uri_ptr);
+        strcpy(path,root_path);
+        strcat(path,uri_ptr);
     }
     
     init_file_list();
@@ -524,7 +539,7 @@ void serve_put(int sockfd, char * root_path, const char * uri_ptr){
         }
 	if((fd=creat(path,S_IRWXO|S_IRWXG|S_IRWXU))==-1)
 	{
-	    log_error("serve_put()-create() error:%s\n",strerror(errno));
+	    log_error("serve_put()-create() error:%s\n",strerror_r(errno,err_buf,500));
 	    code=500;
             reason="Internal Error";
         }

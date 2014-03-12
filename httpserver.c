@@ -25,11 +25,12 @@
 
 #define MAXCONNECTION 50
 #define PROCESS_NAME_DEFAULT "http-server"
-#define MAXMSGBUF 5000
+
 void start_server(const char* process_name, const char * port, const char * root_path, const int debugflg);
 void *serve(void *arg);
 
 extern int http_server_tosyslog;
+extern int suppress_debug;
 char * root_path;
 
 int main(int argc, char *argv[])
@@ -51,6 +52,7 @@ Example2: ./httpserver -p 3000 -d\n\
 Example3: ./httpserver -p 3000 -r /home/NAME/my_server_root/\n\n";
 
     http_server_tosyslog=1;
+    suppress_debug=1;
 
     while ((c = getopt(argc, argv, ":hdn:p:r:")) != -1) {
         
@@ -70,6 +72,7 @@ Example3: ./httpserver -p 3000 -r /home/NAME/my_server_root/\n\n";
             break;
         case 'd':
             http_server_tosyslog=0;
+            suppress_debug=0;
             debugflg++;
             printf("debug mode is enabled.\n");
             break;
@@ -128,7 +131,7 @@ void start_server(const char* process_name, const char * port, const char * root
         connfd[i] = -1;
     }
     for ( ; ; ) {
-        int j=0;
+        int j=0,ret=0;
 	
         clilen = addrlen;
         for(j=0; j < MAXCONNECTION; j++)
@@ -141,14 +144,15 @@ void start_server(const char* process_name, const char * port, const char * root
 		
         connfd[j] = accept(listenfd, cliaddr, &clilen);
         log_debug("Accepted a new client from %s\n",sock_ntop(cliaddr,clilen));
-        pthread_create(&tid, NULL, &serve, (void *) &(connfd[j]));
+        ret=pthread_create(&tid, NULL, &serve, (void *) &(connfd[j]));
+	log_debug("new thread-%d is created. pthread_create() return %d\n",(int)tid, ret);
     }
 }
 
 void serve_process(int connfd)
 {
-    char linebuf[500], httpMsg[MAXMSGBUF] ,method[20], uri[MAX_LOCATION_LEN];
-    log_debug("I am %d, my socket descriptor is %d, bye!\n",(int)getpid(), connfd);
+    char linebuf[500], method[20], uri[MAX_LOCATION_LEN];
+    log_debug("I am %d, my socket descriptor is %d, bye!\n",(int)pthread_self(), connfd);
 
     memset(linebuf,0,500);
     memset(method,0,20);
@@ -164,8 +168,6 @@ void serve_process(int connfd)
 
     if(strcmp(method,"GET")==0){
         /*serve GET*/
-        /*read up the reqeust message*/
-        readwithtimeout(connfd, httpMsg, MAXMSGBUF,10);
         serve_get(connfd, root_path, uri);
     }else if(strcmp(method,"PUT")==0){
         /*serve PUT*/
@@ -181,7 +183,6 @@ void *serve(void *arg)
 
 	pthread_detach(pthread_self());
 	serve_process(*((int *) arg));
-	close(*((int*) arg));
 	*((int*) arg) = -1;
 	return(NULL);
 }

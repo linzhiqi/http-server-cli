@@ -70,7 +70,7 @@ struct node * getNode(const char * fileName, struct node * fileList)
       tmp = tmp->next;
     }
   }
-  pthread_rwlock_unlock(&fileListLock);
+  /*pthread_rwlock_unlock(&fileListLock);*/
   return NULL;
 }
 

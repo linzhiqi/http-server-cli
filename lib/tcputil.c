@@ -252,6 +252,7 @@ char * sock_ntop(const struct sockaddr *sa, socklen_t salen){
 
 int readline_timeout(int ifd, char * buf, int max, int sec){
     struct timeval tv;
+    char err_buf[501];
     fd_set readfds;
     int n=0, i=0;
     tv.tv_sec = sec;
@@ -259,6 +260,7 @@ int readline_timeout(int ifd, char * buf, int max, int sec){
     FD_ZERO(&readfds);
     FD_SET(ifd, &readfds);
     memset(buf,0,max);
+    memset(err_buf,0,501);
 
     if(select(ifd+1, &readfds, NULL, NULL, &tv)==0){
         log_error("readwithtimeout(): time out!\n");
@@ -283,7 +285,7 @@ int readline_timeout(int ifd, char * buf, int max, int sec){
 		close(ifd);
 		return -1;
 	    }else{
-		log_error("readline_timeout()-read() return error:%s\n",strerror(errno));
+		log_error("readline_timeout()-read() return error:%s\n",strerror_r(errno,err_buf,500));
 		close(ifd);
 		return -1;
 	    }

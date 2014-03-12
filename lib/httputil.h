@@ -15,6 +15,6 @@ int fetch_body(int sockfd, char * res_location, const char * hostName, const cha
 int upload_file(int sockfd, const char * res_location, const char * hostName, const char *local_path);
 
 int parse_req_line(const char * req_line, char * method_ptr, char * uri_ptr);
-void serve_put(int sockfd, char * root_path, const char * uri_ptr);
-void serve_get(int connfd, char * root_path, const char * uri_ptr);
+void serve_put(int sockfd, const char * root_path, const char * uri_ptr);
+void serve_get(int connfd, const char * root_path, const char * uri_ptr);
 #endif
