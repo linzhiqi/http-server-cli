@@ -440,7 +440,7 @@ void serve_get(int connfd, const char * root_path, const char * uri_ptr){
         /*lock read_lock*/
         pthread_rwlock_rdlock(file_node->mylock);
     }else if(file_exist(path)){
-        file_node = appendNode(uri_ptr, fileLinkedList);
+        file_node = appendNode(path, fileLinkedList);
         pthread_rwlock_rdlock(file_node->mylock);
     }else{
         code=404;
@@ -483,21 +483,23 @@ void serve_put(int sockfd, const char * root_path, const char * uri_ptr){
     struct node * file_node;
     int fd, code=0;
     char *reason;
-    int bodystartfl=0;
+    int bodystartfl=0,file_create_flg=0;
     char headers[MAXHEADER];
-    char httpMsg[MAXMSGBUF];
-    long int n=0,total,len=-1;
+    char httpMsg[MAXMSGBUF+1];
+    long int n=0,total=0,len=-1,len_tobe_written=0;
 
     memset(err_buf,0,501);
+    memset(path,0,MAX_LOCATION_LEN);
+    memset(httpMsg,0,MAXMSGBUF+1);
     /*obtain file path from uri_ptr*/
-    if(strcmp(uri_ptr,"/")){
+    if(strcmp(uri_ptr,"/")==0){
         code=400;
         reason="Bad request";
     }else{
         strcpy(path,root_path);
         strcat(path,uri_ptr);
     }
-    
+    log_debug("root_path:%s,uri_ptr:%s,path:%s, exits?%d\n", root_path, uri_ptr, path, file_exist(path));
     init_file_list();
     /*lock the file node list*/
     pthread_rwlock_wrlock(&fileListLock);
@@ -505,18 +507,17 @@ void serve_put(int sockfd, const char * root_path, const char * uri_ptr){
     if( (file_node=getNode(path, fileLinkedList)) != NULL ){
         /*lock read_lock*/
         pthread_rwlock_wrlock(file_node->mylock);
-    }else if(file_exist(path)){
-        file_node = appendNode(uri_ptr, fileLinkedList);
-        pthread_rwlock_wrlock(file_node->mylock);
     }else{
-        code=404;
-        reason="Not Found";
+        file_node = appendNode(path, fileLinkedList);
+        pthread_rwlock_wrlock(file_node->mylock);
+        /*code=404;
+        reason="Not Found";*/
     }
     /*release the file node list*/
     pthread_rwlock_unlock(&fileListLock);
     /*if content_length==0, remove the file
       else, read body and overwrite the file*/
-    while((n = readwithtimeout(sockfd, httpMsg, MAXMSGBUF-1,10))>0){
+    while((n = readwithtimeout(sockfd, httpMsg, MAXMSGBUF,10))>0){
         ptr=httpMsg;
         /*read and obtain content_length*/
         if(len==-1){
@@ -526,6 +527,7 @@ void serve_put(int sockfd, const char * root_path, const char * uri_ptr){
         if(bodystartfl==0){
             bodystartfl=parsebodystart(&ptr);
         }
+        len_tobe_written=strlen(ptr);
         if(len==0){
             if(!file_exist(path)){
 	        code = 404;
@@ -537,29 +539,34 @@ void serve_put(int sockfd, const char * root_path, const char * uri_ptr){
 	    }
             break;
         }
-	if((fd=creat(path,S_IRWXO|S_IRWXG|S_IRWXU))==-1)
-	{
-	    log_error("serve_put()-create() error:%s\n",strerror_r(errno,err_buf,500));
-	    code=500;
-            reason="Internal Error";
+	if(!file_create_flg)
+        {
+            if((fd=creat(path,S_IRWXO|S_IRWXG|S_IRWXU))==-1)
+	    {
+	        log_error("serve_put()-create() error:%s\n",strerror_r(errno,err_buf,500));
+	        code=500;
+                reason="Internal Error";
+                break;
+            }
+            file_create_flg=1;
         }
-        if(writen(fd,ptr,n)!=n)
+        if(writen(fd,ptr,len_tobe_written)!=len_tobe_written)
         {
             log_error("serve_put()-writen():data written to file is not completed\n");
             close(fd);
             code=500;
             reason="Internal Error";
+            break;
         }
-        total+=n;
+        total+=len_tobe_written;
         if(total>=len)
 	{
             code=201;
             reason="Created";
-	}
-        if(code!=0){
             break;
-        }
-        memset(httpMsg,0,MAXMSGBUF);
+	}
+        
+        memset(httpMsg,0,MAXMSGBUF+1);
     }
    
     /*release write_lock*/

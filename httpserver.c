@@ -31,6 +31,7 @@ void *serve(void *arg);
 
 extern int http_server_tosyslog;
 extern int suppress_debug;
+extern int show_thread_id;
 char * root_path;
 
 int main(int argc, char *argv[])
@@ -52,7 +53,8 @@ Example2: ./httpserver -p 3000 -d\n\
 Example3: ./httpserver -p 3000 -r /home/NAME/my_server_root/\n\n";
 
     http_server_tosyslog=1;
-    suppress_debug=1;
+    suppress_debug=0;
+    show_thread_id=1;
 
     while ((c = getopt(argc, argv, ":hdn:p:r:")) != -1) {
         
