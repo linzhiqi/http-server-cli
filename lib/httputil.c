@@ -41,7 +41,6 @@ ssize_t readwithtimeout(int sockfd, void *buf, size_t count, int sec);
 ssize_t writewithtimeout(int sockfd, const void *buf, size_t count, int sec);
 ssize_t writenwithtimeout(int fd, const char *buf, size_t len, int sec);
 
-extern pthread_rwlock_t fileListLock;
 extern struct node * fileLinkedList;
 
 /* url:=[protocol://]+<hostname>+[:port number]+[resource location] */
@@ -98,7 +97,7 @@ int fetch_body(int sockfd, char * res_location, const char * hostName, const cha
     sprintf(httpMsg,"GET %s HTTP/1.1\r\nHost:%s\r\nIam: linzhiqi\r\n\r\n",res_location,hostName);
     if(writenwithtimeout(sockfd,httpMsg,strlen(httpMsg),10)!=strlen(httpMsg))
     {
-        printf("GET message is not sent completely\n");
+        log_error("GET message is not sent completely\n");
         close(sockfd);
         return -1;
     }
@@ -123,7 +122,7 @@ int fetch_body(int sockfd, char * res_location, const char * hostName, const cha
             tobewritten=strlen(ptr);
             if(writen(fd,ptr,tobewritten)!=tobewritten)
             {
-                printf("Received body content is not written completely\n");
+                log_error("Received body content is not written completely\n");
                 close(fd);
                 return -1;
             }
@@ -139,13 +138,13 @@ int fetch_body(int sockfd, char * res_location, const char * hostName, const cha
 
     if(n==-1)
     {
-	perror("read error");
+	log_error("fetch_body() read error:%s", strerror(errno));
 	return -1;
     }else if (n==0){
-	printf("fetch_body(): connection prematurely closed.\n");
+	log_error("fetch_body() connection prematurely closed:%s", strerror(errno));
 	return -1;
     }else if (n==-2){
-        printf("fetch_body(): read time out!\n");
+        log_error("fetch_body(): read time out!\n");
         return -1;
     }
     return 0;
@@ -180,17 +179,6 @@ int sendfile(int fd, int file_size, int sockfd){
                 return(-1);
             }else{
 		log_error("sendfile() received response before sending complete; response:%s\n",buf);
-                return -1;
-                /*ptr = buf;
-                code=parserespcode(&ptr);
-                if((code/100)==2)
-                {
-		    printf("Put respond OK.\n");
-		    return 0;
-                }else{
-		    printf("Put respond not OK.\n");
-		    return -1;
-                }*/
             }
 	}
 
@@ -232,7 +220,7 @@ int upload_file(int sockfd, const char * res_location, const char * hostName, co
     /*get the file size of the object*/
     if(stat(local_path, &fileinfo)==-1)
     {
-        perror("file info error");
+        log_error("upload_file()-stat():%s",strerror(errno));
         return -1;
     }
     len=(long int)fileinfo.st_size;
@@ -241,14 +229,14 @@ int upload_file(int sockfd, const char * res_location, const char * hostName, co
 
     if(writenwithtimeout(sockfd,httpMsg,strlen(httpMsg),10)!=strlen(httpMsg))
     {
-        printf("PUT headers are not sent completely!\n");
+        log_error("PUT headers are not sent completely!\n");
         close(sockfd);
         return -1;
     }
 	
     if((fd=open(local_path,O_RDWR))==-1)
     {
-        perror("open local file");
+        log_error("upload_file()-open(%s):%s",local_path,strerror(errno));
         return -1;
     }
 
@@ -307,7 +295,7 @@ int getofd(const char * res_location, const char *local_path, int store_data){
 
         if((fd=creat(filename,S_IRWXO|S_IRWXG|S_IRWXU))==-1)
 	{
-	    perror("file create error");
+            log_error("getofd():%s",strerror(errno));
 	    return -1;
         }
     }else{
@@ -411,6 +399,27 @@ int file_size(const char *filename){
     return size;
 }
 
+void serve_index(int connfd, const char * root_path){
+    char httpmsg[MAXMSGBUF+1], fileinfo[4000];
+    int code;
+    char *reason;
+
+    if(list_file_info(root_path, fileinfo, 4000)==0){
+        code=200;
+        reason="OK";
+    }else{
+        code=404 ;
+        reason="Not Found";
+    }
+    sprintf(httpmsg,"HTTP/1.1 %d %s\r\nIam: linzhiqi\r\nContent-Type: text/plain\r\nContent-Length: %d\r\n\r\n%s",code,reason,(int)strlen(fileinfo),fileinfo);
+    if(writenwithtimeout(connfd,httpmsg,strlen(httpmsg),10)!=strlen(httpmsg))
+    {
+        log_error("serve_index() response are not sent completely!\n");
+        close(connfd);
+        exit(-1);
+    }
+    log_debug("GET response:%d,%s\n",code,reason);
+}
 
 void serve_get(int connfd, const char * root_path, const char * uri_ptr){
     char path[MAX_LOCATION_LEN];
@@ -421,38 +430,44 @@ void serve_get(int connfd, const char * root_path, const char * uri_ptr){
     char headers[MAXHEADER+1], err_buf[501];
     memset(err_buf,0,501);
     memset(headers,0,MAXHEADER+1);
+    memset(path,0,MAX_LOCATION_LEN);
     log_debug("root_path: %s\n",root_path);
     /*obtain file path from uri_ptr*/
-    if(strcmp(uri_ptr,"/")==0){
-        strcat(path,"/index.html");
+    if(strcmp(uri_ptr,"/")==0||strcmp(uri_ptr,"/index")==0||strcmp(uri_ptr,"/index.html")==0){
+        serve_index(connfd,root_path);
+	return;
     }else{
         strcpy(path,root_path);
         strcat(path,uri_ptr);
     }
+
     log_debug("path: %s, exits?%d, size:%d\n", path, file_exist(path),file_size(path));
     /*read up the reqeust message*/
     readwithtimeout(connfd, headers, MAXHEADER,10);
     init_file_list();
-    /*lock the file node list*/
-    pthread_rwlock_wrlock(&fileListLock);
+    file_node=getNode(path, fileLinkedList);
+    log_debug("getNode() for %s returned\n",path);
     /*add node for this file if not exists yet*/
-    if( (file_node=getNode(path, fileLinkedList)) != NULL ){
-        /*lock read_lock*/
+    if( file_node != NULL ){
+        /*read lock the file*/
         pthread_rwlock_rdlock(file_node->mylock);
+        log_debug("holds read-lock for %s\n",path);
     }else if(file_exist(path)){
         file_node = appendNode(path, fileLinkedList);
+        log_debug("appendNode for %s returned\n",path);
+        /*read lock the file*/
         pthread_rwlock_rdlock(file_node->mylock);
+        log_debug("holds read-lock for %s\n",path);
     }else{
         code=404;
         reason="Not Found";
     }
-    /*release the file node list*/
-    pthread_rwlock_unlock(&fileListLock);
+    
     if(code!=404) filesize=file_size(path);
 
     /*create response*/
     sprintf(headers,"HTTP/1.1 %d %s\r\nIam: linzhiqi\r\nContent-Type: text/plain\r\nContent-Length: %d\r\n\r\n",code,reason,filesize);
-    log_debug(headers);
+
     /*write response*/
     if(writenwithtimeout(connfd,headers,strlen(headers),10)!=strlen(headers))
     {
@@ -471,9 +486,10 @@ void serve_get(int connfd, const char * root_path, const char * uri_ptr){
         exit(-1);;
     }
     sendfile(fd,filesize, connfd);
-    /*release read_lock*/
+    /*release the file*/
     pthread_rwlock_unlock(file_node->mylock);
-    
+    log_debug("release lock for %s\n",path);
+    log_debug("GET response:%d,%s\n",code,reason);
     /*close socket*/
     if(close(connfd)!=0) log_error("serve_get()-close(socket) error:%s\n",strerror_r(errno,err_buf,500));
 }
@@ -483,7 +499,7 @@ void serve_put(int sockfd, const char * root_path, const char * uri_ptr){
     struct node * file_node;
     int fd, code=0;
     char *reason;
-    int bodystartfl=0,file_create_flg=0;
+    int bodystartfl=0,file_create_flg=0,file_existed=0;
     char headers[MAXHEADER];
     char httpMsg[MAXMSGBUF+1];
     long int n=0,total=0,len=-1,len_tobe_written=0;
@@ -501,22 +517,23 @@ void serve_put(int sockfd, const char * root_path, const char * uri_ptr){
     }
     log_debug("root_path:%s,uri_ptr:%s,path:%s, exits?%d\n", root_path, uri_ptr, path, file_exist(path));
     init_file_list();
-    /*lock the file node list*/
-    pthread_rwlock_wrlock(&fileListLock);
+    file_node=getNode(path, fileLinkedList); 
+    log_debug("getNode() for %s returned\n",path);   
     /*ftech write_lock for this file*/
-    if( (file_node=getNode(path, fileLinkedList)) != NULL ){
-        /*lock read_lock*/
+    if( file_node != NULL ){
+        /*write lock the file*/
         pthread_rwlock_wrlock(file_node->mylock);
+        log_debug("holds write-lock for %s\n",path);
     }else{
         file_node = appendNode(path, fileLinkedList);
+        log_debug("appendNode() for %s returned\n",path);
+        /*write lock the file*/
         pthread_rwlock_wrlock(file_node->mylock);
-        /*code=404;
-        reason="Not Found";*/
+        log_debug("holds write-lock for %s\n",path);
     }
-    /*release the file node list*/
-    pthread_rwlock_unlock(&fileListLock);
-    /*if content_length==0, remove the file
-      else, read body and overwrite the file*/
+
+    file_existed=file_exist(path);
+    /*read body and create or override the file*/
     while((n = readwithtimeout(sockfd, httpMsg, MAXMSGBUF,10))>0){
         ptr=httpMsg;
         /*read and obtain content_length*/
@@ -528,17 +545,7 @@ void serve_put(int sockfd, const char * root_path, const char * uri_ptr){
             bodystartfl=parsebodystart(&ptr);
         }
         len_tobe_written=strlen(ptr);
-        if(len==0){
-            if(!file_exist(path)){
-	        code = 404;
-	        reason = "Not Found";
-            }else{
-                unlink(path);
-	        code = 200;
-	        reason = "OK";
-	    }
-            break;
-        }
+        
 	if(!file_create_flg)
         {
             if((fd=creat(path,S_IRWXO|S_IRWXG|S_IRWXU))==-1)
@@ -561,8 +568,13 @@ void serve_put(int sockfd, const char * root_path, const char * uri_ptr){
         total+=len_tobe_written;
         if(total>=len)
 	{
-            code=201;
-            reason="Created";
+            if(!file_existed){
+                code=201;
+                reason="Created";
+            }else{
+                code=200;
+                reason="OK";
+            }
             break;
 	}
         
@@ -571,14 +583,7 @@ void serve_put(int sockfd, const char * root_path, const char * uri_ptr){
    
     /*release write_lock*/
     pthread_rwlock_unlock(file_node->mylock);
-    /*delete the corresponding node from file list if the file is removed*/
-    
-    if(code==200){
-        pthread_rwlock_wrlock(&fileListLock);
-        deleteNode(file_node);
-        pthread_rwlock_unlock(&fileListLock);
-    }
-
+    log_debug("release lock for %s\n",path);
     /*create response*/
     sprintf(headers,"HTTP/1.1 %d %s\r\nIam: linzhiqi\r\nContent-Type: text/plain\r\nContent-Length: %d\r\n\r\n",code,reason,0);
     /*write response*/
@@ -588,5 +593,6 @@ void serve_put(int sockfd, const char * root_path, const char * uri_ptr){
         close(sockfd);
         exit(-1);
     }
+    log_debug("PUT response:%d,%s\n",code,reason);;
 }
 

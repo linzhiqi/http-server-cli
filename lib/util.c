@@ -9,7 +9,11 @@
 #include <stdlib.h>
 #include <errno.h>
 #include <stdio.h>
+#include <dirent.h> 
+#include <string.h>
+#include "logutil.h"
 
+typedef	void	Sigfunc(int);	/* for signal handlers */
 #define	MAXFD	64
 
 int daemon_init(const char *pname, int facility)
@@ -89,4 +93,67 @@ int ignoresig(int signo){
         return -1;
     }
     return 0;
+}
+
+int list_file_info(const char * dir_path, char * info, int size){
+  DIR           *d;
+  struct dirent *dir;
+  int len1=0, len2=0;
+  char * ptr=info;
+  d = opendir(dir_path);
+  if (d!=NULL)
+  {
+    memset(info,0,size);
+    while ((dir = readdir(d)) != NULL)
+    {
+      len1=strlen(info),
+      len2=strlen(dir->d_name)+1;
+      if((len1+len2)<=(size-1)){
+        sprintf(ptr, "%s\n", dir->d_name);
+        ptr+=len2;
+      }else{
+        snprintf(ptr, size-(len1+len2)-1, "%s\n", dir->d_name);
+        break;
+      }
+    }
+
+    closedir(d);
+  }else{
+    return errno;
+  }
+
+  return(0);
+}
+
+Sigfunc *
+signal(int signo, Sigfunc *func)
+{
+	struct sigaction	act, oact;
+
+	act.sa_handler = func;
+	sigemptyset(&act.sa_mask);
+	act.sa_flags = 0;
+	if (signo == SIGALRM) {
+#ifdef	SA_INTERRUPT
+		act.sa_flags |= SA_INTERRUPT;	/* SunOS 4.x */
+#endif
+	} else {
+#ifdef	SA_RESTART
+		act.sa_flags |= SA_RESTART;		/* SVR4, 44BSD */
+#endif
+	}
+	if (sigaction(signo, &act, &oact) < 0)
+		return(SIG_ERR);
+	return(oact.sa_handler);
+}
+/* end signal */
+
+Sigfunc *
+Signal(int signo, Sigfunc *func)	/* for our signal() function */
+{
+	Sigfunc	*sigfunc;
+
+	if ( (sigfunc = signal(signo, func)) == SIG_ERR)
+		log_error("Signal(): signal error. Signal number=%d\n", signo);
+	return(sigfunc);
 }

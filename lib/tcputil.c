@@ -33,7 +33,7 @@ int tcp_connect(const char *host, const char *serv)
     hints.ai_socktype = SOCK_STREAM;
 
     if ( (n = getaddrinfo(host, serv, &hints, &res)) != 0) {
-        fprintf(stderr, "getaddrinfo erro for server:%s service:%s %s!\n",
+        log_error("getaddrinfo erro for server:%s service:%s %s!\n",
         host, serv, gai_strerror(n));
         return -1;
     }
@@ -42,7 +42,7 @@ int tcp_connect(const char *host, const char *serv)
     do {
         struct sockaddr_in *sin=(struct sockaddr_in *)res->ai_addr;
         addrstr=inet_ntop(res->ai_family, &(sin->sin_addr),buf, sizeof(buf));
-        printf("Address is %s\n", addrstr);
+        log_debug("tcp_connect(): Address is %s\n", addrstr);
 
         sockfd = socket(res->ai_family, res->ai_socktype,
                     res->ai_protocol);
@@ -56,9 +56,9 @@ int tcp_connect(const char *host, const char *serv)
     } while ( (res = res->ai_next) != NULL);
 
     if (res == NULL) {	/* errno set from final connect() */
-        fprintf(stderr, "tcp_connect:no working addrinfo for server:%s  service:%s\n", host, serv);
+        log_error("tcp_connect():no working addrinfo for server:%s  service:%s\n", host, serv);
         sockfd = -1;
-        perror("tcp_connect() error");
+        log_error("tcp_connect():%s",strerror(errno));
         return -1;
     }
 
@@ -77,7 +77,6 @@ ssize_t writen(int fd, const char *buf, size_t len){
     cnt = len;
     while((n=write(fd,ptr,cnt))>=0)
     {
-        write(1,">",1);
 	if(n<cnt)
 	{
 	    ptr+=n;
@@ -88,8 +87,8 @@ ssize_t writen(int fd, const char *buf, size_t len){
 	}
     }
     if(errno==EPIPE)
-        perror("writen get EPIPE");
-    else perror("writen error");
+        log_error("writen() get EPIPE:%s",strerror(errno));
+    else log_error("writen() error:%s",strerror(errno));;
     return total;
 }
 
@@ -103,7 +102,7 @@ ssize_t writewithtimeout(int sockfd, const void *buf, size_t count, int sec){
     tv.tv_sec = sec;
     tv.tv_usec = 0;
     if(select(maxfdp1, NULL, &wset, NULL, &tv)==0){
-        printf("writewithtimeout(): time out!\n");
+        log_error("writewithtimeout(): time out!\n");
         return -2;
     }else{
         return write(sockfd, buf, count);
@@ -116,7 +115,6 @@ ssize_t writenwithtimeout(int fd, const char *buf, size_t len, int sec){
     cnt = len;
     while((n=writewithtimeout(fd,ptr,cnt,sec))>=0)
     {
-        write(1,">",1);
 	if(n<cnt)
 	{
 	    ptr+=n;
@@ -127,12 +125,9 @@ ssize_t writenwithtimeout(int fd, const char *buf, size_t len, int sec){
 	}
     }
     if(n==-2){
-        printf("writenwithtimeout(): time out!\n");
+        log_error("writenwithtimeout(): time out!\n");
         return -2;
     }
-    if(errno==EPIPE)
-        perror("writen get EPIPE");
-    else perror("writen error");
     return total;
 }
 
@@ -148,7 +143,7 @@ ssize_t readwithtimeout(int sockfd, void *buf, size_t count, int sec){
     tv.tv_sec = sec;
     tv.tv_usec = 0;
     if(select(maxfdp1, &rset, NULL, NULL, &tv)==0){
-        printf("readwithtimeout(): time out!\n");
+        log_error("readwithtimeout(): time out!\n");
         return -2;
     }else{
         return read(sockfd, buf, count);
@@ -189,12 +184,12 @@ int tcp_listen(const char *host, const char *serv, socklen_t *addrlenp)
         } while ( (res = res->ai_next) != NULL);
 
         if (res == NULL) {        /* errno from final socket() or bind() */
-                fprintf(stderr, "tcp_listen error for %s, %s", host, serv);
+                log_error("tcp_listen() error for %s, %s", host, serv);
 		return -1;
 	}
 
         if (listen(listenfd, LISTENQ) < 0) {
-		perror("listen");
+		log_error("tcp_listen()-listen() error:%s",strerror(errno));
 		return -1;
 	}
 

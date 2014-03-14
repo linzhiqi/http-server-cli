@@ -28,10 +28,11 @@
 
 void start_server(const char* process_name, const char * port, const char * root_path, const int debugflg);
 void *serve(void *arg);
-
+void termination_handler (int signum);
 extern int http_server_tosyslog;
 extern int suppress_debug;
 extern int show_thread_id;
+extern struct node * fileLinkedList;
 char * root_path;
 
 int main(int argc, char *argv[])
@@ -113,7 +114,7 @@ Example3: ./httpserver -p 3000 -r /home/NAME/my_server_root/\n\n";
 
 
 void start_server(const char* process_name, const char * port, const char * root_path, const int debugflg){
-    struct sockaddr    *cliaddr;
+    struct sockaddr    cliaddr;
     int    i, listenfd;
     pthread_t tid;
     int connfd[MAXCONNECTION];
@@ -123,11 +124,13 @@ void start_server(const char* process_name, const char * port, const char * root
         daemon_init(process_name,LOG_WARNING);
         sleep(3);
     }
- 
+    Signal(SIGTERM, termination_handler);
+    Signal(SIGKILL, termination_handler);
+    Signal(SIGINT, termination_handler);
+    Signal(SIGQUIT, termination_handler);
     log_debug("HttpServer-%d started...\n",(int)getpid());
     listenfd = tcp_listen(NULL, port, &addrlen);
 
-    cliaddr = malloc(addrlen);
     for( i=0; i < MAXCONNECTION; i++)
     {
         connfd[i] = -1;
@@ -144,8 +147,8 @@ void start_server(const char* process_name, const char * port, const char * root
             }	
         }
 		
-        connfd[j] = accept(listenfd, cliaddr, &clilen);
-        log_debug("Accepted a new client from %s\n",sock_ntop(cliaddr,clilen));
+        connfd[j] = accept(listenfd, &cliaddr, &clilen);
+        log_debug("Accepted a new client from %s, sockfd=%d\n",sock_ntop(&cliaddr,clilen),connfd[j]);
         ret=pthread_create(&tid, NULL, &serve, (void *) &(connfd[j]));
 	log_debug("new thread-%d is created. pthread_create() return %d\n",(int)tid, ret);
     }
@@ -154,7 +157,7 @@ void start_server(const char* process_name, const char * port, const char * root
 void serve_process(int connfd)
 {
     char linebuf[500], method[20], uri[MAX_LOCATION_LEN];
-    log_debug("I am %d, my socket descriptor is %d, bye!\n",(int)pthread_self(), connfd);
+    log_debug("I am %d, my socket descriptor is %d.\n",(int)pthread_self(), connfd);
 
     memset(linebuf,0,500);
     memset(method,0,20);
@@ -182,11 +185,19 @@ void serve_process(int connfd)
 void *serve(void *arg)
 {
 	/*	void	web_child(int);*/
-
 	pthread_detach(pthread_self());
 	serve_process(*((int *) arg));
 	*((int*) arg) = -1;
 	return(NULL);
+}
+
+
+void
+termination_handler (int signum)
+{
+  log_debug("caught signal-%d\n",signum);
+  clearFileList(fileLinkedList);
+  exit(0);
 }
 
 
