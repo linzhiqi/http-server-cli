@@ -31,6 +31,8 @@
 #define max(a,b)            (((a) < (b)) ? (b) : (a))
 #endif
 
+
+
 ssize_t writen(int fd, const char *buf, size_t len);
 char *getFileFromRes(char * file_name, const char * res_location);
 int getofd(const char * res_location, const char *local_path, int store_data);
@@ -595,4 +597,359 @@ void serve_put(int sockfd, const char * root_path, const char * uri_ptr){
     }
     log_debug("PUT response:%d,%s\n",code,reason);;
 }
+
+enum processing_state{ init, start_line_parsed, content_length_got, body_reached, request_done, response_ready, response_sent };
+enum request_type{ unsupported, get, put };
+struct transaction_info{
+  enum processing_state pro_state;
+  enum request_type req_type;
+  char * uri;
+  char * doc_root;
+  char * local_path;
+  long body_size=0;
+  long body_bytes_got=0;
+  char * buf;
+  int buf_offset=0;
+  int bytes_in_buf=0;
+  int sockfd=-1;
+  int fd=-1;
+  int file_existed=0;
+  struct node * file_node=NULL;
+  int resp_code=0;
+}
+
+int parse_req_start_line(struct transaction_info *info){
+  char err_buf[501], * ptr;
+  memset(err_buf,0,501);
+  if(info->buf==NULL or info->uri==NULL){
+    log_error("parse_req_start_line() buf or uri refers to NULL.\n");
+    info->resp_code=500;
+    return -1;
+  }
+  
+  ptr=strstr(info->buf, "GET");
+  if(ptr!=NULL && ptr==info->buf){
+    info->pro_state=start_line_parsed;
+    info->req_type=get;
+    ptr=strstr(info->buf, "HTTP/1.");
+    strncpy(info->uri, info->buf+4, (ptr-info->buf)-5);
+    return 0;
+  }
+  ptr=strstr(info->buf, "PUT");
+  if(ptr!=NULL && ptr==info->buf){
+    info->pro_state=start_line_parsed;
+    info->req_type=put;
+    ptr=strstr(info->buf, "HTTP/1.");
+    strncpy(info->uri, info->buf+4, (ptr-info->buf)-5);
+    return 0;
+  }
+  info->resp_code=400;
+  return -1;
+}
+
+long get_content_length(struct transaction_info *info){
+  long len;
+  char * ptr;
+  if(info->buf==NULL){
+    log_error("parse_req_start_line() buf refers to NULL.\n");
+    info->resp_code=500;
+    return -1;
+  }
+  ptr=strstr(info->buf,"Content-Length");
+  if(ptr==NULL){
+    return -1;
+  }
+  ptr+=15;
+  len=strtol(ptr,&ptr,10);
+  info->body_size=len;
+  info->pro_state=content_length_got;
+  return info->body_size;
+}
+
+int reach_body(struct transaction_info *info){
+  char * ptr;
+  int offset;
+  if(info->buf==NULL){
+    log_error("parse_req_start_line() buf refers to NULL.\n");
+    info->resp_code=500;
+    return -1;
+  }
+  ptr=strstr(info->buf,"\r\n\r\n");
+  if(ptr==NULL){
+    return -1;
+  }
+  if(info->req_type==get){
+    info->pro_state=request_done;
+  }else if(info->req_type==put){
+    offset=ptr+4-info->buf;
+    if(offset>info->bytes_in_buf+1){
+      log_error("empty line and body is not in the same buffer. This implementation doesn't handle this situation.\n");
+      info->resp_code=500;
+      return -1
+    }
+    info->buf_offset=offset;
+    info->pro_state=body_reached;
+  }
+  return 0;
+}
+
+int get_fd_for_uri(struct transaction_info *info){
+  char err_buf[500];
+  memset(info->local_path,0,MAX_URI+1);
+  strcpy(info->local_path,info->doc_root);
+  strcat(info->local_path,info->uri);
+  fd->file_existed=file_exist(info->local_path);
+  if((info->fd=creat(info->local_path,S_IRWXO|S_IRWXG|S_IRWXU))==-1){
+    log_error("serve_put()-create() error:%s\n",strerror_r(errno,err_buf,500));
+    info->resp_code=500;
+    return -1;
+  }
+  return 0;
+}
+
+void get_file_wlock(struct transaction_info *info){
+  init_file_list();
+  info->file_node=getNode(path, fileLinkedList); 
+  log_debug("getNode() for %s returned\n",path);   
+  /*get node structure for this file*/
+  if( info->file_node != NULL ){
+    /*write lock the file*/
+    pthread_rwlock_wrlock(info->file_node->mylock);
+    log_debug("holds write-lock for %s\n",info->local_path);
+  }else{
+    file_node = appendNode(info->local_path, fileLinkedList);
+    log_debug("appendNode() for %s returned\n",info->local_path);
+    /*write lock the file*/
+    pthread_rwlock_wrlock(info->file_node->mylock);
+    log_debug("holds write-lock for %s\n",info->local_path);
+  }
+   info->file_lock_is_got=1;
+}
+
+void get_file_rlock(struct transaction_info *info){
+  init_file_list();
+  info->file_node=getNode(path, fileLinkedList); 
+  log_debug("getNode() for %s returned\n",path);   
+  /*fetch node structure for this file*/
+  if( info->file_node != NULL ){
+    /*read lock the file*/
+    pthread_rwlock_rdlock(info->file_node->mylock);
+    log_debug("holds read-lock for %s\n",info->local_path);
+  }else{
+    file_node = appendNode(info->local_path, fileLinkedList);
+    log_debug("appendNode() for %s returned\n",info->local_path);
+    /*read lock the file*/
+    pthread_rwlock_rdlock(info->file_node->mylock);
+    log_debug("holds read-lock for %s\n",info->local_path);
+  }
+   info->file_lock_is_got=1;
+}
+
+void release_file_lock(struct transaction_info *info){
+  if(info->file_node!==NULL){
+    /*release write_lock*/
+    pthread_rwlock_unlock(info->file_node->mylock);
+    info->file_lock_is_got=0;
+    info->file_node=NULL;
+    log_debug("release lock for %s\n",info->local_path);
+  }
+}
+
+int write_data_to_fd(struct transaction_info *info){
+  int len_tobe_written=info->bytes_in_buf-info->buf_offset;
+  if(writen(info->fd,info->buf+info->buf_offset,len_tobe_written)!=len_tobe_written){
+    log_error("serve_put()-writen():data written to file is not completed\n");
+    close(info->fd);
+    info->resp_code=500;
+    return -1;
+  }
+  info->body_bytes_got+=len_tobe_written;
+  if(info->body_bytes_got>=info->body_size){
+    if(!info->file_existed){
+      info->resp_code=201;
+    }else{
+      info->resp_code=200;
+    }
+    info->pro_state=request_done;
+  }
+  return 0;
+}
+
+char * get_resp_reason(int code){
+  switch (code){
+    case 200:
+      return "OK";
+    case 201:
+      return "Created";
+    case 500:
+      return "Internal Error";
+    case 404:
+      return "Not Found";
+    case 400:
+      return "Bad Request";
+    default:
+      return "Response code not supporteds";
+  }
+}
+
+void handle_put_req(struct transaction_info *info){
+  sprintf(info->buf,"HTTP/1.1 %d %s\r\nIam: linzhiqi\r\nContent-Type: text/plain\r\nContent-Length: %d\r\n\r\n",info->resp_code,get_resp_reason(info->resp_code),0);
+  info->pro_state=response_ready;
+}
+
+int is_index_uri(char * uri){
+  return strcmp(uri,"/")==0||strcmp(uri,"/index")==0||strcmp(uri,"/index.html")==0
+}
+
+void handle_index(struct transaction_info *info){
+  int body_size;
+  char *body, dir_info[4000];
+  if(list_file_info(doc_root, dir_info, 4000)==0){
+    info->resp_code=200;
+    reason="OK";
+    body=dir_info;
+    info->body_size=strlen(dir_info);
+  }else{
+    info->resp_code=500 ;
+    reason="Internal Error";
+    body="";
+    info->body_size=0;
+  }
+    
+  sprintf(info->buf,"HTTP/1.1 %d %s\r\nIam: linzhiqi\r\nContent-Type: text/plain\r\nContent-Length: %d\r\n\r\n%s",info->resp_code,get_resp_reason(info->resp_code),info->body_size,body);
+  info->pro_state=response_ready;
+}
+
+void handle_get_req(struct transaction_info *info){
+  memset(info->local_path,0,MAX_URI+1);
+  strcpy(info->local_path,info->doc_root);
+  strcat(info->local_path,info->uri);
+  if((fd->file_existed=file_exist(info->local_path)==0){
+    info->resp_code=404;
+    info->body_size=0;
+  }else{
+    /*if resource exists*/
+    get_file_rlock(info);
+    /*open file, copy and write to client*/
+    if((fd=open(path,O_RDWR))==-1)
+    {
+      log_error("handle_get_req()-open() error:%s\n",strerror_r(errno,err_buf,500));
+      info->resp_code=500;
+      info->body_size=0;
+    }else{
+      info->resp_code=200;
+      info->body_size=file_size(info->local_path);
+    }
+  }
+  sprintf(info->buf,"HTTP/1.1 %d %s\r\nIam: linzhiqi\r\nContent-Type: text/plain\r\nContent-Length: %d\r\n\r\n",info->resp_code,get_resp_reason(info->resp_code),info->body_size);
+  if(info->resp_code==200){
+    sendfile(info->fd,info->body_size, info->sockfd);
+  }
+}
+
+void serve_http_request(int sockfd, char * doc_root){
+  int io_to_read=1, io_to_write=0, bytes_read=0;
+  char httpMsg[MAXMSGBUF+1], uri[MAX_URI+1], root[MAX_URI+1], file_path[MAX_URI+1];
+  struct transaction_info *info;
+
+  memset(httpMsg,0,MAXMSGBUF+1);
+  memset(uri,0,MAX_URI+1);
+  memset(root,0,MAX_URI+1,MAX_URI);
+  memset(file_path,0,MAX_URI+1,MAX_URI);
+  strncpy(root,doc_root);
+  info=(struct transaction_info *)malloc(sizeof(transaction_info));
+  info->pro_state=init;
+  info->sockfd=sockfd;
+  info->buf=httpMsg;
+  info->uri=uri;
+  info->doc_root=root;
+  
+  while(info->pro_state!=request_done){
+    if((bytes_read = readwithtimeout(sockfd, info->buf, MAXMSGBUF,10))<=0){
+      log_error("readwithtimeout() error. %s\n", print_transaction_state(info));
+      exit(-1);
+    }
+    info->buf_offset=0;
+    info->bytes_in_buf=bytes_read;
+    if(info->pro_state==init && parse_req_start_line(info)==-1){
+      continue;
+    }
+    if(info->pro_state==start_line_parsed && get_content_length(info)==-1){
+      continue;
+    }
+    if(info->pro_state==content_length_got && reach_body(info)==-1){
+      continue;
+    }
+    if(info->req_type==put && info->pro_state==body_reached){
+      if(info->fd==-1){
+        get_fd_for_uri(info);
+      }
+      if(!info->file_lock_is_got){
+        get_file_lock(info);
+      }
+      write_data_to_fd(info);
+    }
+  }
+  if(info->file_lock_is_got){
+    release_file_lock(info);
+  }
+
+  if(info->pro_state==request_done){
+    memset(info->buf,0,MAXMSGBUF+1);
+    if(info->req_type==put){
+      handle_put_req(info);
+      return;
+    }else if(info->req_type==get && is_index_uri(info->uri)){
+      handle_index();
+      return;
+    }else if(info->req_type==get && !is_index_uri(info->uri)){
+      handle_get_req(info);
+    }else{
+      handle_unsupported_req(info);
+    }
+  }
+}
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
 

@@ -156,30 +156,7 @@ void start_server(const char* process_name, const char * port, const char * root
 
 void serve_process(int connfd)
 {
-    char linebuf[500], method[20], uri[MAX_LOCATION_LEN];
-    log_debug("I am %d, my socket descriptor is %d.\n",(int)pthread_self(), connfd);
-
-    memset(linebuf,0,500);
-    memset(method,0,20);
-    memset(uri,0,MAX_LOCATION_LEN);
-    readline_timeout(connfd, linebuf, 500, 10);
-    log_debug("readline() returns: %s", linebuf);
-    /*read request line*/ 
-    if(parse_req_line(linebuf, method, uri)==-1){
-        /*send erro response*/
-        return;
-    }
-    log_debug("method: %s\nuri: %s\n", method,uri);
-
-    if(strcmp(method,"GET")==0){
-        /*serve GET*/
-        serve_get(connfd, root_path, uri);
-    }else if(strcmp(method,"PUT")==0){
-        /*serve PUT*/
-        serve_put(connfd, root_path, uri);
-    }else{
-        /*this method is not supported*/
-    }
+    serve_http_request(connfd,root_path);
 }
 
 void *serve(void *arg)
