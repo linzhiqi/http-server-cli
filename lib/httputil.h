@@ -17,4 +17,5 @@ int upload_file(int sockfd, const char * res_location, const char * hostName, co
 int parse_req_line(const char * req_line, char * method_ptr, char * uri_ptr);
 void serve_put(int sockfd, const char * root_path, const char * uri_ptr);
 void serve_get(int connfd, const char * root_path, const char * uri_ptr);
+void serve_http_request(int sockfd, char * doc_root);
 #endif
