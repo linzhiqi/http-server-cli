@@ -9,8 +9,8 @@
 
 
 void parse_url(const char *url, char *port, char *host, char *location);
-int tcp_connect(const char *host, const char *serv);
 char *getFileFromRes(char * file_name, const char * res_location);
+void post_transaction(int sockfd, const char * uri, const char * host, const char * body);
 int fetch_body(int sockfd, char * res_location, const char * hostName, const char *local_path, int store_data);
 int upload_file(int sockfd, const char * res_location, const char * hostName, const char *local_path);
 

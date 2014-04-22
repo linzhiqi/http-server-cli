@@ -8,13 +8,17 @@
 #include <sys/types.h>
 #include <stdlib.h>
 
+#define MAX_POST_BODY_SIZE 500
+
+void query_host_name(int sockfd, const char * uri, const char * host, const char * query_name);
+
 int main(int argc, char *argv[])
 {
-    int c, uflg=0, iflg=0, oflg=0;
+    int c, uflg=0, iflg=0, oflg=0, dflg=0;
     int sockfd=-1;
     extern char *optarg;
     extern int optind, optopt;
-    char *url, *filePath;
+    char *url, *filePath, *hostName;
     char port[MAX_PORT_LEN], host[MAXHOSTNAME], location[MAX_LOCATION_LEN];
 
     char * usage_msg = 
@@ -24,13 +28,15 @@ int main(int argc, char *argv[])
     -i    the local path to store the data fetched. \n\
           Argument is optional and use the resource file name by default\n\
     -o    the local path of the file to be upload. Argument is mandatory\n\
+    -d    the host name to be queried by http DNS server\n\
     -h    show the usage\n\
 Example1: ./dnscli -u nwprog1.netlab.hut.fi:3000/index\n\
 Example2: ./dnscli -u nwprog1.netlab.hut.fi:3000/upload_011 -i my_download.txt\n\
 Example3: ./dnscli -u nwprog1.netlab.hut.fi:3000/upload_012 -o my_download.txt\n\
+Example4: ./dnscli -u nwprog3.netlab.hut.fi:3333/dns-query -d nwprog1.netlab.hut.fi\n\
 url:=[protocol://]+<hostname>+[:port number]+[resource location]\n\n";
 
-    while ((c = getopt(argc, argv, ":hu:i:o:")) != -1) {
+    while ((c = getopt(argc, argv, ":hu:i:o:d:")) != -1) {
         
         switch(c) {
         case 'u':
@@ -47,6 +53,11 @@ url:=[protocol://]+<hostname>+[:port number]+[resource location]\n\n";
             oflg++;
             filePath = optarg;
             printf("File to be upload is stored at %s\n", filePath);
+            break;
+        case 'd':
+            dflg++;
+            hostName = optarg;
+            printf("The host name to be query: %s\n", hostName);
             break;
         case 'h':
             printf("%s",usage_msg);
@@ -90,6 +101,8 @@ url:=[protocol://]+<hostname>+[:port number]+[resource location]\n\n";
 	}else{
 	    printf("upload fail!\n");
         }
+    }else if(dflg>0){
+        query_host_name(sockfd,location,host,hostName);
     }else{
         if(fetch_body(sockfd,location,host,filePath,0)==0){
 	    printf("show content success!\n");
@@ -99,6 +112,13 @@ url:=[protocol://]+<hostname>+[:port number]+[resource location]\n\n";
     }
 
     return 0;
+}
+
+void query_host_name(int sockfd, const char * uri, const char * host, const char * query_name){
+  char body[MAX_POST_BODY_SIZE];
+  memset(body,0,0);
+  snprintf(body,MAX_POST_BODY_SIZE-1,"Name=%s&Type=A", query_name);
+  post_transaction(sockfd, uri, host, body);
 }
 
 

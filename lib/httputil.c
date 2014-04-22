@@ -99,7 +99,31 @@ void parse_url(const char *url, char *port, char *host, char *location){
     return;
 }
 
-
+/*
+ * send POSR request and receive response
+ */
+void post_transaction(int sockfd, const char * uri, const char * host, const char * body){
+  int n=0;
+  char httpMsg[MAXMSGBUF];
+  sprintf(httpMsg,"POST %s HTTP/1.1\r\nHost:%s\r\nContent-Type: application/x-www-form-urlencoded\r\nContent-Length: %d\r\nIam: linzhiqi\r\n\r\n%s",uri,host,(int)strlen(body),body);
+  if(writenwithtimeout(sockfd,httpMsg,strlen(httpMsg),10)!=strlen(httpMsg))
+  {
+    log_error("POST message is not sent completely\n");
+    close(sockfd);
+    return;
+  }
+  memset(httpMsg,0,MAXMSGBUF);
+  if((n = readwithtimeout(sockfd, httpMsg, MAXMSGBUF-1,10))>0){
+    close(sockfd);
+    log_debug("POST respond:\n%s\n",httpMsg);
+  }else if(n==-2){
+    log_error("post_transaction(): read time out!\n");
+  }else if(n==0){
+    log_error("post_transaction(): connection prematurely closed:%s", strerror(errno));
+  }else{
+    log_error("post_transaction():%s", strerror(errno));
+  }
+}
 
 /*
  *create and send http GET method to fetch body data
