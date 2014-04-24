@@ -47,11 +47,10 @@ int main(int argc, char *argv[])
     -n    the process name. Argument is mandatory.\n\
     -p    the port it listens on. Argument is mandatory.\n\
     -d    debug model if this is specified.\n\
-    -r    document root, the working directory by default\n\
+    -r    document root\n\
     -h    show the usage\n\
 Example1: ./httpserver -p 3000\n\
-Example2: ./httpserver -p 3000 -d\n\
-Example3: ./httpserver -p 3000 -r /home/NAME/my_server_root/\n\n";
+Example2: ./httpserver -p 3000 -r /home/NAME/my_server_root/\n\n";
 
     http_server_tosyslog=1;
     suppress_debug=0;

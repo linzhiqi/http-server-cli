@@ -7,6 +7,27 @@
 #define MAX_PORT_LEN 5
 #define MAX_LOCATION_LEN 200
 
+enum processing_state{ init, start_line_parsed, content_length_got, body_reached, request_done, response_ready, response_sent };
+enum request_type{ unsupported, get, put, post };
+struct transaction_info{
+  enum processing_state pro_state;
+  enum request_type req_type;
+  char * uri;
+  char * doc_root;
+  char * local_path;
+  long body_size;
+  long body_bytes_got;
+  char * buf;
+  int buf_offset;
+  int bytes_in_buf;
+  int sockfd;
+  int fd;
+  int file_existed;
+  struct node * file_node;
+  int file_lock_is_got;
+  int resp_code;
+};
+
 
 void parse_url(const char *url, char *port, char *host, char *location);
 char *getFileFromRes(char * file_name, const char * res_location);

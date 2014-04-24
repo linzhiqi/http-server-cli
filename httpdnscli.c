@@ -116,7 +116,7 @@ url:=[protocol://]+<hostname>+[:port number]+[resource location]\n\n";
 
 void query_host_name(int sockfd, const char * uri, const char * host, const char * query_name){
   char body[MAX_POST_BODY_SIZE];
-  memset(body,0,0);
+  memset(body,0,MAX_POST_BODY_SIZE);
   snprintf(body,MAX_POST_BODY_SIZE-1,"Name=%s&Type=A", query_name);
   post_transaction(sockfd, uri, host, body);
 }

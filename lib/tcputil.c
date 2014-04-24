@@ -88,7 +88,7 @@ ssize_t writen(int fd, const char *buf, size_t len){
     }
     if(errno==EPIPE)
         log_error("writen() get EPIPE:%s",strerror(errno));
-    else log_error("writen() error:%s",strerror(errno));;
+    else log_error("writen() error:%s",strerror(errno));
     return total;
 }
 

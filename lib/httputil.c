@@ -7,6 +7,7 @@
 #include <string.h>
 #include <sys/types.h>
 #include <stdlib.h>
+#include <stdint.h>
 #include <sys/stat.h>
 #include <fcntl.h>
 #include <math.h>
@@ -17,6 +18,8 @@
 #include "util.h"
 #include "tcputil.h"
 #include "linkedlist.h"
+#include "dnsutil.h"
+#include "httputil.h"
 
 
 #define MAXFILENAME 100
@@ -27,6 +30,7 @@
 #define MAX_LOCATION_LEN 200
 #define MAXMSGBUF 5000
 #define MAXHEADER 1000
+#define MAX_DNS_MSG 512
 #define DEFAULT_FILE_NAME "downloaded_file"
 #ifndef max
 #define max(a,b)            (((a) < (b)) ? (b) : (a))
@@ -41,26 +45,7 @@ int parsebodystart(char ** pptr);
 
 extern struct node * fileLinkedList;
 
-enum processing_state{ init, start_line_parsed, content_length_got, body_reached, request_done, response_ready, response_sent };
-enum request_type{ unsupported, get, put };
-struct transaction_info{
-  enum processing_state pro_state;
-  enum request_type req_type;
-  char * uri;
-  char * doc_root;
-  char * local_path;
-  long body_size;
-  long body_bytes_got;
-  char * buf;
-  int buf_offset;
-  int bytes_in_buf;
-  int sockfd;
-  int fd;
-  int file_existed;
-  struct node * file_node;
-  int file_lock_is_got;
-  int resp_code;
-};
+
 
 
 
@@ -447,7 +432,16 @@ int parse_req_start_line(struct transaction_info *info){
     strncpy(info->uri, info->buf+4, (ptr-info->buf)-5);
     return 0;
   }
+  ptr=strstr(info->buf, "POST");
+  if(ptr!=NULL && ptr==info->buf){
+    info->pro_state=start_line_parsed;
+    info->req_type=post;
+    ptr=strstr(info->buf, "HTTP/1.");
+    strncpy(info->uri, info->buf+5, (ptr-info->buf)-5);
+    return 0;
+  }
   info->resp_code=400;
+  info->pro_state=request_done;
   return -1;
 }
 
@@ -498,6 +492,10 @@ int reach_body(struct transaction_info *info){
       info->resp_code=500;
       return -1;
     }
+    info->buf_offset=offset;
+    info->pro_state=body_reached;
+  }else if(info->req_type==post){
+    offset=ptr+4-info->buf;
     info->buf_offset=offset;
     info->pro_state=body_reached;
   }
@@ -670,13 +668,14 @@ void handle_get_req(struct transaction_info *info){
 }
 
 void handle_unsupported_req(struct transaction_info *info){
-
+  sprintf(info->buf,"HTTP/1.1 %d %s\r\nIam: linzhiqi\r\nContent-Type: text/plain\r\nContent-Length: %d\r\n\r\n",info->resp_code,get_resp_reason(info->resp_code),0);
+  info->pro_state=response_ready;
 }
 
 char *print_transaction_state(struct transaction_info *info){
   char * ptr=(char *)malloc(300);
   memset(ptr+299,0,1);
-  snprintf(ptr,299,"transaction info:\npro_state=%d\nuri=%s\ndoc_root=%s\nbody_size=%ld\nbody_bytes_got=%ld\nbuf_offset=%d\nbytes_in_buf=%d\nfile_existed=%d\nfile_lock_is_got=%d\nresp_code=%d\n", info->pro_state,info->uri, info->doc_root, info->body_size, info->body_bytes_got, info->buf_offset, info->bytes_in_buf, info->file_existed, info->file_lock_is_got, info->resp_code);
+  snprintf(ptr,299,"transaction info:\nreq_type=%d\npro_state=%d\nuri=%s\ndoc_root=%s\nbody_size=%ld\nbody_bytes_got=%ld\nbuf_offset=%d\nbytes_in_buf=%d\nfile_existed=%d\nfile_lock_is_got=%d\nresp_code=%d\n", info->req_type,info->pro_state,info->uri, info->doc_root, info->body_size, info->body_bytes_got, info->buf_offset, info->bytes_in_buf, info->file_existed, info->file_lock_is_got, info->resp_code);
   return ptr;
 }
 
@@ -685,6 +684,109 @@ void log_transaction_state(struct transaction_info *info, char * msg){
   ptr=print_transaction_state(info);
   log_debug("%s: %s\n", msg, ptr);
   free(ptr);
+}
+
+int is_dns_query(char * uri){
+  if(strncmp(uri,"/dns-query",9)==0){
+    return 1;
+  }else{
+    return 0;
+  }
+}
+
+int parse_dns_query_in_post(const char * content, char * name, char * type){
+  char * ptr1, * ptr2;
+  int len=0;
+  ptr1=strstr(content,"Name=");
+  ptr2=strstr(content,"&Type=");
+  if(ptr1==NULL || ptr2==NULL){
+    return -1;
+  }
+  len=ptr2-ptr1-5;
+  strncpy(name,ptr1+5,len);
+  strncpy(type,ptr2+6,4);
+  return 0;
+}
+
+void handle_dns_query(struct transaction_info *info, const char * name, const char * type, char * dns_result){
+  int lost=0, udp_sockfd=-1, msg_size=0, num;
+  uint8_t * dns_query_buf, dns_resp_buf[MAX_DNS_MSG];
+  struct addrinfo * ressave, * res;
+
+  dns_query_buf=create_dns_query(name, type, &msg_size);
+  //create udp socket
+  if((udp_sockfd=create_udp_socket("8.8.8.8","53", &res, &ressave))==-1){
+    freeaddrinfo(ressave);
+    free(dns_query_buf);
+    log_error("create_udp_socket() failed");
+    //fill failed http response
+    return;
+  }
+  //setopt timeout
+  setReadTimeout(udp_sockfd);
+  
+  do{
+    if (sendto(udp_sockfd, dns_query_buf, msg_size, 0, res->ai_addr, res->ai_addrlen) < 0) {
+      freeaddrinfo(ressave);
+      free(dns_query_buf);
+      log_error("sendto() failed error:%s.\n",strerror(errno));
+      //fill failed http response
+      return;
+    }
+
+    if ((num=recvfrom(udp_sockfd, dns_resp_buf, MAX_DNS_MSG, 0, NULL, NULL)) < 0) {
+      if (errno == EWOULDBLOCK){
+        log_error("recvfrom() timeout.\n");
+        lost++;
+      }else{
+        log_error("recvfrom() error:%s\n",strerror(errno));
+      }
+    }
+  }while(lost!=0 && lost<4);
+  freeaddrinfo(ressave);
+  free(dns_query_buf);
+  if(lost==4){
+    //failed http response
+    return;
+  }
+  //we don't check if transaction id is the same
+  //how many answer records
+  //consume to the start of answer section
+  //parse RDATA, buf address
+  memset(info->buf,0,MAXMSGBUF+1);
+  parse_dns_resp(info, (uint8_t *)dns_resp_buf, num);
+  //format result to http response
+  
+}
+
+void process_post_req(struct transaction_info *info){
+  char name[MAXHOSTNAME], type[5], dns_result[50];
+  memset(name,0,MAXHOSTNAME);
+  memset(type,0,5);
+  memset(dns_result,0,50);
+  
+  if(is_dns_query(info->uri)==0){
+    info->resp_code=404;
+    info->pro_state=request_done;
+    return;
+  }
+  if(parse_dns_query_in_post(info->buf+info->buf_offset, name, type)!=0){
+    info->resp_code=400;
+    info->pro_state=request_done;
+    return;
+  }
+  /*info->resp_code=200;
+  sprintf(info->buf,"name:%s,type=%s\n",name,type);
+  info->buf_offset=0;
+  info->pro_state=request_done;*/
+  handle_dns_query(info, name, type, dns_result);
+}
+
+void handle_post_req(struct transaction_info *info){
+  char buf[MAXMSGBUF+1];
+  strcpy(buf,info->buf+info->buf_offset);
+  sprintf(info->buf,"HTTP/1.1 %d %s\r\nIam: linzhiqi\r\nContent-Type: text/plain\r\nContent-Length: %d\r\n\r\n%s",info->resp_code,get_resp_reason(info->resp_code),(int)strlen(buf),buf);
+  info->pro_state=response_ready;
 }
 
 void serve_http_request(int sockfd, char * doc_root){
@@ -717,17 +819,20 @@ void serve_http_request(int sockfd, char * doc_root){
     info->buf_offset=0;
     info->bytes_in_buf=bytes_read;
     if(info->pro_state==init && parse_req_start_line(info)==-1){
+      log_debug("parse_req_start_line(info)==-1\n");
       continue;
     }
     
     if(info->pro_state==start_line_parsed && get_content_length(info)==-1){
+      log_debug("get_content_length(info)==-1\n");
       continue;
     }
     
     if(info->pro_state==content_length_got && reach_body(info)==-1){
+      log_debug("reach_body(info)==-1\n");
       continue;
     }
-    
+
     if(info->req_type==put && info->pro_state==body_reached){
       if(info->fd==-1){
         get_fd_for_uri(info);
@@ -736,6 +841,9 @@ void serve_http_request(int sockfd, char * doc_root){
         get_file_wlock(info);
       }
       write_data_to_fd(info);
+    }else if(info->req_type==post && info->pro_state==body_reached){
+      process_post_req(info);
+      continue;
     }
   }
   if(info->file_lock_is_got){
@@ -743,13 +851,15 @@ void serve_http_request(int sockfd, char * doc_root){
   }
 
   if(info->pro_state==request_done){
-    memset(info->buf,0,MAXMSGBUF+1);
+   /* memset(info->buf,0,MAXMSGBUF+1);*/
     if(info->req_type==put){
       handle_put_req(info);
     }else if(info->req_type==get && is_index_uri(info->uri)){
       handle_index(info);
     }else if(info->req_type==get && !is_index_uri(info->uri)){
       handle_get_req(info);
+    }else if(info->req_type==post){
+      handle_post_req(info);
     }else{
       handle_unsupported_req(info);
     }
