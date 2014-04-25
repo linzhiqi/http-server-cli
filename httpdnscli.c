@@ -10,15 +10,15 @@
 
 #define MAX_POST_BODY_SIZE 500
 
-void query_host_name(int sockfd, const char * uri, const char * host, const char * query_name);
+void query_host_name(int sockfd, const char * uri, const char * host, const char * query_name, const char *qtype);
 
 int main(int argc, char *argv[])
 {
-    int c, uflg=0, iflg=0, oflg=0, dflg=0;
+    int c, uflg=0, iflg=0, oflg=0, dflg=0, tflg=0;
     int sockfd=-1;
     extern char *optarg;
     extern int optind, optopt;
-    char *url, *filePath, *hostName;
+    char *url, *filePath, *hostName, *type;
     char port[MAX_PORT_LEN], host[MAXHOSTNAME], location[MAX_LOCATION_LEN];
 
     char * usage_msg = 
@@ -29,14 +29,16 @@ int main(int argc, char *argv[])
           Argument is optional and use the resource file name by default\n\
     -o    the local path of the file to be upload. Argument is mandatory\n\
     -d    the host name to be queried by http DNS server\n\
+    -t    the type of DNS query, only \"A\" and \"AAAA\" is supported, case ignored. \"A\" by default\n\
     -h    show the usage\n\
 Example1: ./dnscli -u nwprog1.netlab.hut.fi:3000/index\n\
 Example2: ./dnscli -u nwprog1.netlab.hut.fi:3000/upload_011 -i my_download.txt\n\
 Example3: ./dnscli -u nwprog1.netlab.hut.fi:3000/upload_012 -o my_download.txt\n\
 Example4: ./dnscli -u nwprog3.netlab.hut.fi:3333/dns-query -d nwprog1.netlab.hut.fi\n\
+Example5: ./dnscli -u nwprog3.netlab.hut.fi:3333/dns-query -d nwprog1.netlab.hut.fi -t AAAA\n\
 url:=[protocol://]+<hostname>+[:port number]+[resource location]\n\n";
 
-    while ((c = getopt(argc, argv, ":hu:i:o:d:")) != -1) {
+    while ((c = getopt(argc, argv, ":hu:i:o:d:t:")) != -1) {
         
         switch(c) {
         case 'u':
@@ -58,6 +60,11 @@ url:=[protocol://]+<hostname>+[:port number]+[resource location]\n\n";
             dflg++;
             hostName = optarg;
             printf("The host name to be query: %s\n", hostName);
+            break;
+        case 't':
+            tflg++;
+            type = optarg;
+            printf("The Type of the DNS query: %s\n", type);
             break;
         case 'h':
             printf("%s",usage_msg);
@@ -102,7 +109,11 @@ url:=[protocol://]+<hostname>+[:port number]+[resource location]\n\n";
 	    printf("upload fail!\n");
         }
     }else if(dflg>0){
-        query_host_name(sockfd,location,host,hostName);
+        if(tflg==0){
+          type="A";
+        }
+        query_host_name(sockfd,location,host,hostName,type);
+
     }else{
         if(fetch_body(sockfd,location,host,filePath,0)==0){
 	    printf("show content success!\n");
@@ -114,10 +125,10 @@ url:=[protocol://]+<hostname>+[:port number]+[resource location]\n\n";
     return 0;
 }
 
-void query_host_name(int sockfd, const char * uri, const char * host, const char * query_name){
+void query_host_name(int sockfd, const char * uri, const char * host, const char * query_name, const char *qtype){
   char body[MAX_POST_BODY_SIZE];
   memset(body,0,MAX_POST_BODY_SIZE);
-  snprintf(body,MAX_POST_BODY_SIZE-1,"Name=%s&Type=A", query_name);
+  snprintf(body,MAX_POST_BODY_SIZE-1,"Name=%s&Type=%s", query_name,qtype);
   post_transaction(sockfd, uri, host, body);
 }
 

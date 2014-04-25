@@ -33,6 +33,7 @@ extern int http_server_tosyslog;
 extern int suppress_debug;
 extern int show_thread_id;
 extern struct node * fileLinkedList;
+extern char *dns_server;
 char * root_path;
 
 int main(int argc, char *argv[])
@@ -48,15 +49,18 @@ int main(int argc, char *argv[])
     -p    the port it listens on. Argument is mandatory.\n\
     -d    debug model if this is specified.\n\
     -r    document root\n\
+    -s    DNS server host name or ip address\n\
     -h    show the usage\n\
 Example1: ./httpserver -p 3000\n\
-Example2: ./httpserver -p 3000 -r /home/NAME/my_server_root/\n\n";
+Example2: ./httpserver -p 3000 -r /home/NAME/my_server_root/\n\
+Example3: ./httpserver -p 3000 -r /home/NAME/my_server_root/ -s 8.8.8.8\n\n";;
 
     http_server_tosyslog=1;
     suppress_debug=0;
     show_thread_id=1;
+    dns_server=NULL;
 
-    while ((c = getopt(argc, argv, ":hdn:p:r:")) != -1) {
+    while ((c = getopt(argc, argv, ":hdn:p:r:s:")) != -1) {
         
         switch(c) {
         case 'n':
@@ -77,6 +81,10 @@ Example2: ./httpserver -p 3000 -r /home/NAME/my_server_root/\n\n";
             suppress_debug=0;
             debugflg++;
             printf("debug mode is enabled.\n");
+            break;
+        case 's':
+            dns_server=optarg;
+            printf("dns server is %s.\n", dns_server);
             break;
         case 'h':
             printf("%s",usage_msg);

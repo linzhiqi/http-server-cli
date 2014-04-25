@@ -44,7 +44,7 @@ long parselength(char ** pptr);
 int parsebodystart(char ** pptr);
 
 extern struct node * fileLinkedList;
-
+char * dns_server;
 
 
 
@@ -98,7 +98,7 @@ void post_transaction(int sockfd, const char * uri, const char * host, const cha
     return;
   }
   memset(httpMsg,0,MAXMSGBUF);
-  if((n = readwithtimeout(sockfd, httpMsg, MAXMSGBUF-1,10))>0){
+  if((n = readwithtimeout(sockfd, httpMsg, MAXMSGBUF-1,25))>0){
     close(sockfd);
     log_debug("POST respond:\n%s\n",httpMsg);
   }else if(n==-2){
@@ -592,6 +592,10 @@ char * get_resp_reason(int code){
       return "Created";
     case 500:
       return "Internal Error";
+    case 501:
+      return "Not Implemented";
+    case 403:
+      return "Forbidden";
     case 404:
       return "Not Found";
     case 400:
@@ -708,21 +712,56 @@ int parse_dns_query_in_post(const char * content, char * name, char * type){
   return 0;
 }
 
+void create_http_resp_dns(struct transaction_info *info, enum dns_rcode rcode, char * rdata_str){
+  if(rcode==no_error){
+    info->resp_code=200;
+  }else if(rcode==format_error){
+    info->resp_code=400;
+  }else if(rcode==server_failure){
+    info->resp_code=500;
+  }else if(rcode==name_error){
+    info->resp_code=404;
+  }else if(rcode==not_imp){
+    info->resp_code=501;
+  }else if(rcode==refused){
+    info->resp_code=403;
+  }
+
+  if(info->resp_code==200){
+    sprintf(info->buf,"HTTP/1.1 %d %s\r\nIam: linzhiqi\r\nContent-Type: text/plain\r\nContent-Length: %d\r\n\r\n%s",info->resp_code,get_resp_reason(info->resp_code),(int)strlen(rdata_str),rdata_str);
+  }
+  
+  info->pro_state=request_done;
+}
+
+void create_failed_http_rsp(struct transaction_info *info, const char * code){
+  sprintf(info->buf,"HTTP/1.1 %d %s\r\nIam: linzhiqi\r\nContent-Type: text/plain\r\nContent-Length: %d\r\n\r\n",info->resp_code,get_resp_reason(info->resp_code),0);
+  info->pro_state=response_ready;
+}
+
 void handle_dns_query(struct transaction_info *info, const char * name, const char * type, char * dns_result){
   int lost=0, udp_sockfd=-1, msg_size=0, num;
   uint8_t * dns_query_buf, dns_resp_buf[MAX_DNS_MSG];
   struct addrinfo * ressave, * res;
+  char * rdata_str, *dns_server2;
+  enum dns_rcode rcode;
 
   dns_query_buf=create_dns_query(name, type, &msg_size);
-  //create udp socket
-  if((udp_sockfd=create_udp_socket("8.8.8.8","53", &res, &ressave))==-1){
+  /*create udp socket*/
+  if(dns_server!=NULL){
+    dns_server2=dns_server;
+  }else{
+    dns_server2="8.8.8.8";
+  }
+  if((udp_sockfd=create_udp_socket(dns_server2,"53", &res, &ressave))==-1){
     freeaddrinfo(ressave);
     free(dns_query_buf);
     log_error("create_udp_socket() failed");
-    //fill failed http response
+    info->resp_code=500;
+    info->pro_state=request_done;
     return;
   }
-  //setopt timeout
+  /*setopt timeout*/
   setReadTimeout(udp_sockfd);
   
   do{
@@ -730,7 +769,8 @@ void handle_dns_query(struct transaction_info *info, const char * name, const ch
       freeaddrinfo(ressave);
       free(dns_query_buf);
       log_error("sendto() failed error:%s.\n",strerror(errno));
-      //fill failed http response
+      info->resp_code=500;
+      info->pro_state=request_done;
       return;
     }
 
@@ -746,17 +786,19 @@ void handle_dns_query(struct transaction_info *info, const char * name, const ch
   freeaddrinfo(ressave);
   free(dns_query_buf);
   if(lost==4){
-    //failed http response
+    info->resp_code=500;
+    info->pro_state=request_done;
     return;
   }
-  //we don't check if transaction id is the same
-  //how many answer records
-  //consume to the start of answer section
-  //parse RDATA, buf address
-  memset(info->buf,0,MAXMSGBUF+1);
-  parse_dns_resp(info, (uint8_t *)dns_resp_buf, num);
-  //format result to http response
+  /*we don't check if transaction id is the same
+    and only get the first answer resource record if there's any
+    check rcode, then consume to the start of answer section, and then print RDATA to a string*/
+  rcode=parse_dns_resp((uint8_t *)dns_resp_buf, num, &rdata_str);
   
+  /*format result to http response*/
+  create_http_resp_dns(info, rcode, rdata_str);
+
+  free(rdata_str);
 }
 
 void process_post_req(struct transaction_info *info){
@@ -783,9 +825,11 @@ void process_post_req(struct transaction_info *info){
 }
 
 void handle_post_req(struct transaction_info *info){
-  char buf[MAXMSGBUF+1];
-  strcpy(buf,info->buf+info->buf_offset);
-  sprintf(info->buf,"HTTP/1.1 %d %s\r\nIam: linzhiqi\r\nContent-Type: text/plain\r\nContent-Length: %d\r\n\r\n%s",info->resp_code,get_resp_reason(info->resp_code),(int)strlen(buf),buf);
+  if(info->resp_code==200){
+    info->pro_state=response_ready;
+    return;
+  }
+  sprintf(info->buf,"HTTP/1.1 %d %s\r\nIam: linzhiqi\r\nContent-Type: text/plain\r\nContent-Length: %d\r\n\r\n",info->resp_code,get_resp_reason(info->resp_code),0);
   info->pro_state=response_ready;
 }
 
