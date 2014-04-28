@@ -863,7 +863,7 @@ void serve_http_request(int sockfd, char * doc_root){
   if(info->file_lock_is_got){
     release_file_lock(info);
   }
-
+  /*when request is parsed completely*/
   if(info->pro_state==request_done){
     if(info->req_type==put){
       handle_put_req(info);
@@ -876,6 +876,8 @@ void serve_http_request(int sockfd, char * doc_root){
     }else{
       handle_unsupported_req(info);
     }
+    /*if response is created and ready to be sent, it goes here*/
+    /*if response can not be sent in just one writenwithtimeout(), it should handle the sending by itself, for example response for GET*/
     if(info->pro_state==response_ready){
       if(writenwithtimeout(info->sockfd,info->buf,strlen(info->buf),10)!=strlen(info->buf))
       {
