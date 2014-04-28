@@ -11,6 +11,8 @@
 #include <stdio.h>
 #include <dirent.h> 
 #include <string.h>
+#include <sys/time.h>
+#include <sys/stat.h>
 #include "logutil.h"
 
 typedef	void	Sigfunc(int);	/* for signal handlers */
@@ -156,4 +158,27 @@ Signal(int signo, Sigfunc *func)	/* for our signal() function */
 	if ( (sigfunc = signal(signo, func)) == SIG_ERR)
 		log_error("Signal(): signal error. Signal number=%d\n", signo);
 	return(sigfunc);
+}
+
+double getTimeElapsed(struct timeval end, struct timeval start)
+{
+  return (end.tv_sec - start.tv_sec) + (end.tv_usec - start.tv_usec) / 1000000.00;
+}
+
+int file_exist(const char *filename){
+    struct stat   fileinfo;   
+    return (stat(filename, &fileinfo) == 0);
+}
+
+int file_size(const char *filename){
+    int size=0;
+    char err_buf[501];
+    struct stat fileinfo;
+    memset(err_buf,0,501);
+    if(stat(filename, &fileinfo)==-1){
+        log_error("file_size()-stat() file '%s' return error:%s\n",filename,strerror_r(errno,err_buf,500));
+        size=-1;
+    }
+    size=(int)fileinfo.st_size;
+    return size;
 }

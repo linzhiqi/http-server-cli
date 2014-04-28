@@ -51,9 +51,9 @@ int main(int argc, char *argv[])
     -r    document root\n\
     -s    DNS server host name or ip address\n\
     -h    show the usage\n\
-Example1: ./httpserver -p 3000\n\
-Example2: ./httpserver -p 3000 -r /home/NAME/my_server_root/\n\
-Example3: ./httpserver -p 3000 -r /home/NAME/my_server_root/ -s 8.8.8.8\n\n";;
+Example1: ./server -p 3000\n\
+Example2: ./server -p 3000 -r /home/NAME/my_server_root/\n\
+Example3: ./server -p 3000 -r /home/NAME/my_server_root/ -s 8.8.8.8\n\n";;
 
     http_server_tosyslog=1;
     suppress_debug=0;
@@ -126,7 +126,7 @@ void start_server(const char* process_name, const char * port, const char * root
     pthread_t tid;
     int connfd[MAXCONNECTION];
     socklen_t    clilen, addrlen;
-    fprintf(stdout, "pid-%d started...\n",(int)getpid());
+    log_debug("pid-%d started...\n",(int)getpid());
     if(debugflg<1){
         daemon_init(process_name,LOG_WARNING);
         sleep(3);
@@ -183,58 +183,5 @@ termination_handler (int signum)
   clearFileList(fileLinkedList);
   exit(0);
 }
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
 
 

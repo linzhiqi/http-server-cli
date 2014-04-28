@@ -8,7 +8,6 @@
 #include <sys/types.h>
 #include <stdlib.h>
 #include <stdint.h>
-#include <sys/stat.h>
 #include <fcntl.h>
 #include <math.h>
 #include <signal.h>
@@ -22,7 +21,7 @@
 #include "httputil.h"
 
 
-#define MAXFILENAME 100
+
 #define MAXHOSTNAME 200
 #define MAX_URL_LEN 500
 #define MAX_URI 500
@@ -43,10 +42,8 @@ int parserespcode(char * buf);
 long parselength(char ** pptr);
 int parsebodystart(char ** pptr);
 
-extern struct node * fileLinkedList;
-char * dns_server;
-
-
+extern struct node * fileLinkedList;/*initialized in init_file_list()*/
+char * dns_server; /*initialized in httpserver.c*/
 
 
 /* url:=[protocol://]+<hostname>+[:port number]+[resource location] */
@@ -200,7 +197,7 @@ int sendfile(int fd, int file_size, int sockfd){
         maxfdp1 = max(fd, sockfd) + 1;
         
         select(maxfdp1, &rset, NULL, NULL, NULL);
-
+        /*at this stage, sockfd is readable only when something wrong*/
         if (FD_ISSET(sockfd, &rset)) {	/* socket is readable */
             if ( (n = read(sockfd, buf, MAXMSGBUF)) == 0) {
 		log_error("sendfile()-read() server terminated prematurely; error:%s\n",strerror_r(errno,err_buf,500));
@@ -214,7 +211,7 @@ int sendfile(int fd, int file_size, int sockfd){
             }
 	}
 
-	if (FD_ISSET(fd, &rset)) {  /* input is readable */
+	if (FD_ISSET(fd, &rset)) {  /* file input is readable */
             if ( (n = read(fd, buf, MAXMSGBUF)) == 0) {
                 stdineof = 1;
 		FD_CLR(fd, &rset);
@@ -247,15 +244,7 @@ int upload_file(int sockfd, const char * res_location, const char * hostName, co
     char httpMsg[MAXMSGBUF];
     int fd,ret,code;
     
-    struct stat fileinfo;
-
-    /*get the file size of the object*/
-    if(stat(local_path, &fileinfo)==-1)
-    {
-        log_error("upload_file()-stat():%s",strerror(errno));
-        return -1;
-    }
-    len=(long int)fileinfo.st_size;
+    len=(long int)file_size(local_path);
 
     sprintf(httpMsg,"PUT %s HTTP/1.1\r\nHost:%s\r\nIam: linzhiqi\r\nContent-Length: %ld\r\n\r\n",res_location,hostName,len);
 
@@ -385,27 +374,6 @@ int parsebodystart(char ** pptr){
         return 1;
     }
 }
-
-
-int file_exist(const char *filename){
-    struct stat   fileinfo;   
-    return (stat(filename, &fileinfo) == 0);
-}
-
-int file_size(const char *filename){
-    int size=0;
-    char err_buf[501];
-    struct stat fileinfo;
-    memset(err_buf,0,501);
-    if(stat(filename, &fileinfo)==-1){
-        log_error("file_size()-stat() file '%s' return error:%s\n",filename,strerror_r(errno,err_buf,500));
-        size=-1;
-    }
-    size=(int)fileinfo.st_size;
-    return size;
-}
-
-
 
 int parse_req_start_line(struct transaction_info *info){
   char err_buf[501], * ptr;
@@ -661,7 +629,7 @@ void handle_get_req(struct transaction_info *info){
   {
     log_error("info->buf is not sent completely!\n");
     close(info->sockfd);
-    exit(-1);
+    return;
   }
   if(info->resp_code==200){
     sendfile(info->fd,info->body_size, info->sockfd);
@@ -838,6 +806,7 @@ void serve_http_request(int sockfd, char * doc_root){
   char httpMsg[MAXMSGBUF+1], uri[MAX_URI+1], root[MAX_URI+1], file_path[MAX_URI+1];
   struct transaction_info *info;
 
+  /*initialize transaction_info*/
   memset(httpMsg,0,MAXMSGBUF+1);
   memset(uri,0,MAX_URI+1);
   memset(root,0,MAX_URI+1);
@@ -855,29 +824,31 @@ void serve_http_request(int sockfd, char * doc_root){
   info->file_lock_is_got=0;
   
   while(info->pro_state!=request_done){
-    log_debug("info->pro_state=%d\n",info->pro_state);
     if((bytes_read = readwithtimeout(sockfd, info->buf, MAXMSGBUF,10))<=0){
       log_transaction_state(info, "serve_http_request()-readwithtimeout() error");
-      exit(-1);
+      return;
     }
     info->buf_offset=0;
     info->bytes_in_buf=bytes_read;
+    /*parse start line*/
     if(info->pro_state==init && parse_req_start_line(info)==-1){
       log_debug("parse_req_start_line(info)==-1\n");
       continue;
     }
-    
+    /*get content length*/
     if(info->pro_state==start_line_parsed && get_content_length(info)==-1){
       log_debug("get_content_length(info)==-1\n");
       continue;
     }
-    
+    /*if GET move offset to the last byte of the request*/
+    /*if PUT or POST move offset to the first byte of body*/
     if(info->pro_state==content_length_got && reach_body(info)==-1){
-      log_debug("reach_body(info)==-1\n");
+      /*log_debug("reach_body(info)==-1\n");*/
       continue;
     }
-
-    if(info->req_type==put && info->pro_state==body_reached){
+    /*
+    if(info->req_type==put && info->pro_state==body_reached){*/
+    if(info->req_type==put){
       if(info->fd==-1){
         get_fd_for_uri(info);
       }
@@ -885,9 +856,8 @@ void serve_http_request(int sockfd, char * doc_root){
         get_file_wlock(info);
       }
       write_data_to_fd(info);
-    }else if(info->req_type==post && info->pro_state==body_reached){
+    }else if(info->req_type==post){
       process_post_req(info);
-      continue;
     }
   }
   if(info->file_lock_is_got){
@@ -895,7 +865,6 @@ void serve_http_request(int sockfd, char * doc_root){
   }
 
   if(info->pro_state==request_done){
-   /* memset(info->buf,0,MAXMSGBUF+1);*/
     if(info->req_type==put){
       handle_put_req(info);
     }else if(info->req_type==get && is_index_uri(info->uri)){
@@ -912,52 +881,11 @@ void serve_http_request(int sockfd, char * doc_root){
       {
         log_error("info->buf is not sent completely!\n");
         close(info->sockfd);
-        exit(-1);
+        free(info);
+        return;
       }
     }
   }
+  free(info);
 }
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
 

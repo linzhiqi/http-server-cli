@@ -3,7 +3,7 @@
 
 #include <pthread.h>
 
-#define MAXFILENAME 100
+#define MAXFILENAME 300
 
 struct node {
   char fileName[MAXFILENAME];
