@@ -44,7 +44,7 @@ int main(int argc, char *argv[])
     char *process_name=PROCESS_NAME_DEFAULT, *port;
 
     char * usage_msg = 
-"\nUsage: ./httpserver [-n] <-p> [-r] [-d] [-h]\n\
+"\nUsage: ./httpserver [-n] <-p> [-r] [-d] [-s] [-h]\n\
     -n    the process name. Argument is mandatory.\n\
     -p    the port it listens on. Argument is mandatory.\n\
     -d    debug model if this is specified.\n\

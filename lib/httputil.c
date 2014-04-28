@@ -85,7 +85,7 @@ void parse_url(const char *url, char *port, char *host, char *location){
 }
 
 /*
- * send POSR request and receive response
+ * send POST request and receive response
  */
 void post_transaction(int sockfd, const char * uri, const char * host, const char * body){
   int n=0;
@@ -697,18 +697,18 @@ int is_dns_query(char * uri){
     return 0;
   }
 }
-
+/*assume Name is the first and Type is the second parameter*/
 int parse_dns_query_in_post(const char * content, char * name, char * type){
   char * ptr1, * ptr2;
   int len=0;
   ptr1=strstr(content,"Name=");
-  ptr2=strstr(content,"&Type=");
+  ptr2=strstr(content,"Type=");
   if(ptr1==NULL || ptr2==NULL){
     return -1;
   }
-  len=ptr2-ptr1-5;
+  len=ptr2-ptr1-6;
   strncpy(name,ptr1+5,len);
-  strncpy(type,ptr2+6,4);
+  strncpy(type,ptr2+5,4);
   return 0;
 }
 
@@ -793,7 +793,7 @@ void handle_dns_query(struct transaction_info *info, const char * name, const ch
   /*we don't check if transaction id is the same
     and only get the first answer resource record if there's any
     check rcode, then consume to the start of answer section, and then print RDATA to a string*/
-  rcode=parse_dns_resp((uint8_t *)dns_resp_buf, num, &rdata_str);
+  rcode=parse_dns_resp((uint8_t *)dns_resp_buf, &rdata_str);
   
   /*format result to http response*/
   create_http_resp_dns(info, rcode, rdata_str);

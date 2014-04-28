@@ -22,7 +22,7 @@ int main(int argc, char *argv[])
     char port[MAX_PORT_LEN], host[MAXHOSTNAME], location[MAX_LOCATION_LEN];
 
     char * usage_msg = 
-"\nUsage: ./dnscli <-u> [-i] [-o]\n\
+"\nUsage: ./dnscli <-u> [-i] [-o] [-d [-t]] [-h]\n\
     -u    the url to request. Argument is mandatory.\n\
           With -u option alone, it fetches content and print to console only.\n\
     -i    the local path to store the data fetched. \n\
